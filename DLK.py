@@ -1421,6 +1421,58 @@ async def cb_help_info(_, query: CallbackQuery):
     except Exception:
         pass
 
+# ====================== NEW: RADIO MENU NAVIGATION HANDLERS ======================
+@bot.on_callback_query(filters.regex(r"^radio_page_(\d+)$"))
+async def cb_radio_page(_, query: CallbackQuery):
+    """
+    Handles pagination for the radio stations menu.
+    Edits the same message to show the requested page of stations.
+    """
+    try:
+        m = re.match(r"radio_page_(\d+)", query.data)
+        if not m:
+            return await query.answer()
+        page = int(m.group(1))
+        kb = radio_buttons(page)
+        # Try to edit the message text and markup (original menu uses reply_text with text)
+        try:
+            await query.message.edit_text("📻 Radio Stations - choose one:", reply_markup=kb)
+        except Exception:
+            # If editing text not allowed (e.g. message is a photo/caption), try editing the reply markup only
+            try:
+                await query.message.edit_reply_markup(reply_markup=kb)
+            except Exception:
+                logging.debug("Could not edit radio menu message for pagination.")
+        await query.answer()
+    except Exception as e:
+        logging.debug(f"radio_page handler failed: {e}")
+        try:
+            await query.answer("Failed to load page.", show_alert=True)
+        except Exception:
+            pass
+
+@bot.on_callback_query(filters.regex(r"^radio_close$"))
+async def cb_radio_close(_, query: CallbackQuery):
+    """
+    Closes the radio menu (deletes the message if possible).
+    """
+    try:
+        try:
+            await query.message.delete()
+        except Exception:
+            # fallback: remove inline keyboard
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await query.answer()
+    except Exception as e:
+        logging.debug(f"radio_close handler failed: {e}")
+        try:
+            await query.answer("Failed to close menu.", show_alert=True)
+        except Exception:
+            pass
+
 # (You may keep admin panel, block/unblock handlers from your original file — omitted here for brevity)
 
 # ====================== RESTORE ON STARTUP & LAUNCH ======================
