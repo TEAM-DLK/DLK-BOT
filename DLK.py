@@ -78,7 +78,36 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 RADIO_STATION = {
     "SirasaFM": "http://live.trusl.com:1170/;",
     "HelaNadaFM": "https://stream-176.zeno.fm/9ndoyrsujwpvv",
+    "Radio Plus Hitz": "https://altair.streamerr.co/stream/8054",
+    "English": "https://hls-01-regions.emgsound.ru/11_msk/playlist.m3u8",
+    "HiruFM": "https://radio.lotustechnologieslk.net:2020/stream/hirufmgarden?1707015384",
+    "RedFM": "https://shaincast.caster.fm:47830/listen.mp3",
+    "RanFM": "https://207.148.74.192:7874/ran.mp3",
+    "YFM": "http://live.trusl.com:1180/;",
+    "+212": "http://stream.radio.co/sf55ced545/listen",
+    "Deep House Music": "http://live.dancemusic.ro:7000/",
+    "Radio Italia best music": "https://energyitalia.radioca.st",
+    "The Best Music": "http://s1.slotex.pl:7040/",
+    "HITZ FM": "https://stream-173.zeno.fm/uyx7eqengijtv",
+    "Prime Radio HD": "https://stream-153.zeno.fm/oksfm5djcfxvv",
+    "1Mix Radio - Trance": "https://fr3.1mix.co.uk:8000/128",
+    "Mangled Music Radio": "http://hearme.fm:9500/autodj?8194",
+    "ShreeFM": "https://207.148.74.192:7874/stream2.mp3",
+    "ShaaFM": "https://radio.lotustechnologieslk.net:2020/stream/shaafmgarden",
+    "SithaFM": "https://stream.streamgenial.stream/cdzzrkrv0p8uv",
+    "Joint Radio Beat": "https://jointil.com/stream-beat",
+    "eFM": "https://207.148.74.192:7874/stream",
+    "RFI Tiếng Việt": "https://rfivietnamien96k.ice.infomaniak.ch/rfivietnamien-96k.mp3",
+    "Phat": "https://phat.stream.laut.fm/phat",
+    "Dai Phat Thanh Viet Nam": "http://c13.radioboss.fm:8127/stream",
+    "Pulse EDM Dance Music Radio": "https://naxos.cdnstream.com/1373_128",
+    "Base Music": "https://base-music.stream.laut.fm/base-music",
+    "Ultra Music Festival": "http://prem4.di.fm/umfradio_hi?20a1d1bf879e76&_ic2=1733161375677",
+    "Na Dahasa FM": "https://stream-155.zeno.fm/z7q96fbw7rquv",
+    "Parani Gee Radio": "http://cast2.citrus3.com:8288/;",
+    "SunFM": "https://radio.lotustechnologieslk.net:2020/stream/sunfmgarden",
     "The EDM MEGASHUFFLE": "https://maggie.torontocast.com:9030/stream",
+    "JAM FM": "http://stream.jam.fm/jamfm-nmr/mp3-192/",
 }
 
 # ====================== GLOBALS ======================
@@ -519,9 +548,9 @@ def radio_buttons(page: int = 0, per_page: int = 6):
         buttons.append(row)
     nav = []
     if page > 0:
-        nav.append(InlineKeyboardButton("⬅️ Back", callback_data=f"radio_page_{page-1}"))
+        nav.append(InlineKeyboardButton("◁", callback_data=f"radio_page_{page-1}"))
     if page < total_pages - 1:
-        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"radio_page_{page+1}"))
+        nav.append(InlineKeyboardButton("▷", callback_data=f"radio_page_{page+1}"))
     if nav:
         buttons.append(nav)
     buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="radio_close")])
@@ -551,7 +580,7 @@ async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: 
             m, s = divmod(elapsed, 60)
             h, m = divmod(m, 60)
             timer = f"{h:02d}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-            caption = f"🎧 Now Playing: {title}\n⏳ Duration: {timer}\n\n🔗 {DEV_LINK} | 💬 {SUPPORT_LINK}"
+            caption = f"🎧 Now Playing: {title}\n⏳ Duration: {timer}"
             await bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=caption, reply_markup=player_controls_markup(chat_id))
         except Exception as e:
             logging.debug(f"Timer update failed for {chat_id}/{msg_id}: {e}")
