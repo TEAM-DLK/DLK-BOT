@@ -1,0 +1,4 @@
+ffmpeg
+pymongo
+yt-dlp
+youtube-search-python
