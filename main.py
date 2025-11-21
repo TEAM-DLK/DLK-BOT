@@ -6,10 +6,9 @@ Launcher that:
 - imports DLK.core (re-export shim)
 - dynamically loads all modules in DLK.plugins (so every plugin gets the full re-exported namespace)
 - starts assistant, PyTgCalls and bot clients
+- runs plugin startup tasks appended to DLK.core.startup_tasks
 - schedules restore_playing_on_start (if DB enabled)
 - keeps process alive with pyrogram.idle() and gracefully stops clients on exit
-
-Place this file at repository root and run: python main.py
 """
 import logging
 import pkgutil
@@ -28,7 +27,6 @@ logger = logging.getLogger(__name__)
 def load_core():
     """
     Import DLK.core so plugins can "from DLK.core import *".
-    This module re-exports common symbols from bot.py.
     """
     try:
         import DLK.core  # noqa: F401
@@ -38,10 +36,6 @@ def load_core():
 
 
 def load_plugins(package_name: str = "DLK.plugins") -> List[str]:
-    """
-    Dynamically import all modules in the DLK.plugins package.
-    Returns list of loaded module names.
-    """
     loaded = []
     try:
         package = importlib.import_module(package_name)
@@ -63,7 +57,6 @@ def load_plugins(package_name: str = "DLK.plugins") -> List[str]:
 def start_clients():
     """
     Start assistant, PyTgCalls and bot clients.
-    These calls are synchronous in the existing bot.py pattern.
     """
     try:
         logger.info("Starting assistant client...")
@@ -125,6 +118,43 @@ def stop_clients():
         logger.exception("Error stopping bot")
 
 
+async def run_startup_tasks():
+    """
+    Run async start-up tasks appended to DLK.core.startup_tasks by plugins.
+    Each entry may be:
+      - an async function (coroutine function) -> call and create_task
+      - a callable that returns a coroutine -> call and create_task
+    Tasks are scheduled (not awaited) so the main idle loop continues.
+    """
+    try:
+        import DLK.core as core
+    except Exception:
+        logger.debug("DLK.core not importable; no startup tasks to run.")
+        return
+
+    tasks = getattr(core, "startup_tasks", [])
+    if not tasks:
+        logger.debug("No startup tasks registered.")
+        return
+
+    for idx, t in enumerate(tasks):
+        try:
+            if asyncio.iscoroutinefunction(t):
+                asyncio.create_task(t(), name=f"startup-task-{idx}")
+                logger.info("Scheduled startup coroutine function %s", getattr(t, "__name__", str(t)))
+            elif callable(t):
+                res = t()
+                if asyncio.iscoroutine(res):
+                    asyncio.create_task(res, name=f"startup-task-{idx}")
+                    logger.info("Scheduled startup coroutine returned by %s", getattr(t, "__name__", str(t)))
+                else:
+                    logger.debug("Startup callable %s returned non-coroutine; ignored.", getattr(t, "__name__", str(t)))
+            else:
+                logger.debug("Startup entry %s is not callable; ignored.", str(t))
+        except Exception as e:
+            logger.exception("Failed to schedule startup task %s: %s", str(t), e)
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
     logger.info("DLK main starting...")
@@ -162,13 +192,20 @@ def main():
     except Exception as e:
         logger.debug("Event loop scheduling issue: %s", e)
 
+    # schedule plugin startup tasks
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(run_startup_tasks())
+        logger.info("Scheduled plugin startup tasks runner.")
+    except Exception as e:
+        logger.warning("Could not schedule startup tasks runner: %s", e)
+
     # log start
     try:
-        bot.log_event_sync("bot_started", {"ts": time.time(), "owner": bot.OWNER_ID})
+        bot.log_event_sync("bot_started", {"ts": bot.time.time(), "owner": bot.OWNER_ID})
     except Exception:
-        # If time isn't imported here, fall back to bot.time
         try:
-            bot.log_event_sync("bot_started", {"ts": bot.time.time(), "owner": bot.OWNER_ID})
+            bot.log_event_sync("bot_started", {"ts": time.time(), "owner": bot.OWNER_ID})
         except Exception:
             pass
 
