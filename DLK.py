@@ -54,11 +54,11 @@ import ntgcalls
 load_dotenv()
 
 # ====================== CONFIG ======================
-API_ID = int(os.environ.get("API_ID", "0"))
+API_ID = int(os.environ.get("API_ID", ""))
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION", "")
-OWNER_ID = int(os.getenv("OWNER_ID", "0"))
+OWNER_ID = int(os.getenv("OWNER_ID", ""))
 
 MONGO_URI = os.environ.get("MONGO_URI")
 MONGO_DBNAME = os.environ.get("MONGO_DBNAME", "dlk_radio")
