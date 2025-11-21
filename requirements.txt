@@ -2,3 +2,11 @@ ffmpeg
 pymongo
 yt-dlp
 youtube-search-python
+pyrogram>=2.0
+pytgcalls>=2.0
+Pillow
+aiohttp
+aiofiles
+python-dotenv
+ntgcalls
+dnspython
