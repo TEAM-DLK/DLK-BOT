@@ -13,4 +13,4 @@ if [ -f .env ]; then
 fi
 
 # Start the bot
-python main.py
+python DLK.py
