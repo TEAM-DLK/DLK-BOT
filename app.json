@@ -1,7 +1,7 @@
 {
   "name": "dlk-radio",
-  "description": "DLK Radio Telegram bot",
-  "repository": "https://github.com/giriyaka2001-ship-it/music",
+  "description": "DLK-BOT",
+  "repository": "https://github.com/TEAM-DLK/DLK-BOT",
   "env": {
     "API_ID": { "description": "Telegram API ID", "required": true },
     "API_HASH": { "description": "Telegram API Hash", "required": true },
