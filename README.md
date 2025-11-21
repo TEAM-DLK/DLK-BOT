@@ -43,3 +43,23 @@ Important:
 - Do NOT commit .env with real credentials.
 - Some platforms (Heroku, Replit secret UI, Koyeb, Railway) provide secret stores — use them instead.
 - For persistent storage (download caches, thumbnails), prefer mounting a volume or external storage.
+
+╔══════════════════════════╗
+       DLK RADIO MUSIC BOT
+╚══════════════════════════╝
+
+ Developer & Owner
+➥ @DLK_DEVELOPER   (Main Dev)
+
+
+ Support & Updates
+➥ https://t.me/DLKDEVELOPERS
+➥ https://t.me/DevDLK
+
+
+ Special Thanks
+• Pyrogram & PyTgCalls Team
+
+"Best Quality • Best Stability • 100%"
+
+© 2025 TEAM-DLK – All Rights Reserved
