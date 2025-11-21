@@ -8,6 +8,7 @@ This repository contains deployment helper files for these hosts:
 - Koyeb (koyeb.yml using Dockerfile)
 - Railway (Dockerfile provided as railway.Dockerfile)
 - VPS (systemd service example dlk_radio.service)
+- https://panel.fps.ms/
 
 Quick steps:
 
