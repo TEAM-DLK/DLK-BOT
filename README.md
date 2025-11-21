@@ -49,7 +49,7 @@ Important:
 ╚══════════════════════════╝
 
  Developer & Owner
-➥ @DLK_DEVELOPER   (Main Dev)
+➥ DHANANJAYA   (Main Dev)
 
 
  Support & Updates
