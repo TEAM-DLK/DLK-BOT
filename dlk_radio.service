@@ -1,0 +1,19 @@
+# Example systemd service file for VPS (Debian/Ubuntu). Save as /etc/systemd/system/dlk_radio.service
+[Unit]
+Description=DLK Radio Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=dlk
+WorkingDirectory=/opt/dlk
+EnvironmentFile=/opt/dlk/.env
+ExecStart=/usr/bin/python3 /opt/dlk/main.py
+Restart=always
+RestartSec=5
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=dlk_radio
+
+[Install]
+WantedBy=multi-user.target
