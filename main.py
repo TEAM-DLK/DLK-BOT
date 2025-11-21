@@ -1,46 +1,54 @@
-```python
 """
 main.py
 
-Application entrypoint that loads the core bot (bot.py) and dynamically imports
-all plugins placed in the DLK/plugins package.
+Launcher that:
+- imports the core bot module (bot.py)
+- imports DLK.core (re-export shim)
+- dynamically loads all modules in DLK.plugins (so every plugin gets the full re-exported namespace)
+- starts assistant, PyTgCalls and bot clients
+- schedules restore_playing_on_start (if DB enabled)
+- keeps process alive with pyrogram.idle() and gracefully stops clients on exit
 
-Usage:
-    python main.py
-
-Notes:
-- This loader expects the original bot.py to expose the main Client objects and
-  helper functions (bot, assistant, call_py, init_db_sync, restore_playing_on_start, log_event_sync, OWNER_ID, etc).
-- Place each command/callback handler in a separate file under DLK/plugins/.
-- Importing the plugin modules registers handlers on the `bot` and `assistant` objects
-  because plugin files use the `@bot.on_message` / `@bot.on_callback_query` decorators.
+Place this file at repository root and run: python main.py
 """
-
 import logging
 import pkgutil
 import importlib
 import asyncio
+import sys
+from typing import List
 
-# import the bot core (the existing file in the repository)
-# bot.py should remain as a utilities/core file (no __main__ startup run).
-import bot  # noqa: E402
+# Import the main bot implementation first so DLK.core and plugins can access
+# the already-loaded objects (avoids circular import issues).
+import bot  # the big file you pasted earlier (bot.py)
 
 logger = logging.getLogger(__name__)
 
 
-def load_plugins(package_name: str = "DLK.plugins"):
+def load_core():
     """
-    Dynamically import all modules from the given package. Each module can
-    register handlers on import.
+    Import DLK.core so plugins can "from DLK.core import *".
+    This module re-exports common symbols from bot.py.
     """
-    logger.info("Loading plugins from %s", package_name)
+    try:
+        import DLK.core  # noqa: F401
+        logger.info("Imported DLK.core")
+    except ModuleNotFoundError:
+        logger.warning("DLK.core not found. Make sure DLK/core.py exists.")
+
+
+def load_plugins(package_name: str = "DLK.plugins") -> List[str]:
+    """
+    Dynamically import all modules in the DLK.plugins package.
+    Returns list of loaded module names.
+    """
+    loaded = []
     try:
         package = importlib.import_module(package_name)
     except ModuleNotFoundError:
-        logger.warning("Package %s not found. No plugins loaded.", package_name)
-        return []
+        logger.warning("Plugins package %s not found. Skipping plugin load.", package_name)
+        return loaded
 
-    loaded = []
     for finder, name, ispkg in pkgutil.iter_modules(package.__path__):
         full_name = f"{package_name}.{name}"
         try:
@@ -52,30 +60,33 @@ def load_plugins(package_name: str = "DLK.plugins"):
     return loaded
 
 
-async def async_main():
-    logging.basicConfig(level=logging.INFO)
-    logger.info("Starting DLK main...")
-
-    # initialize DB (if configured)
+def start_clients():
+    """
+    Start assistant, PyTgCalls and bot clients.
+    These calls are synchronous in the existing bot.py pattern.
+    """
     try:
-        bot.init_db_sync()
-    except Exception as e:
-        logger.warning("DB init failed: %s", e)
-
-    # load plugins (they register handlers on import)
-    load_plugins("DLK.plugins")
-
-    # start clients
-    logger.info("Starting assistant, call_py and bot clients...")
-    try:
+        logger.info("Starting assistant client...")
         bot.assistant.start()
-        bot.call_py.start()
-        bot.bot.start()
     except Exception as e:
-        logger.exception("Failed to start clients: %s", e)
+        logger.exception("Failed to start assistant: %s", e)
         raise
 
-    # set assistant and bot metadata if available (best-effort)
+    try:
+        logger.info("Starting call_py (PyTgCalls)...")
+        bot.call_py.start()
+    except Exception as e:
+        logger.exception("Failed to start call_py: %s", e)
+        raise
+
+    try:
+        logger.info("Starting bot client...")
+        bot.bot.start()
+    except Exception as e:
+        logger.exception("Failed to start bot: %s", e)
+        raise
+
+    # best-effort: fill assistant/bot metadata
     try:
         me = bot.assistant.get_me()
         bot.ASSISTANT_USERNAME = getattr(me, "username", None)
@@ -90,30 +101,88 @@ async def async_main():
     except Exception:
         bot.BOT_USERNAME = bot.BOT_USERNAME or None
 
-    # restore playing states (if DB configured)
+
+def stop_clients():
+    """
+    Try to stop clients gracefully.
+    """
     try:
-        asyncio.get_event_loop().create_task(bot.restore_playing_on_start())
+        logger.info("Stopping call_py...")
+        bot.call_py.stop()
     except Exception:
-        logger.debug("Could not schedule restore_playing_on_start")
+        logger.exception("Error stopping call_py")
 
-    bot.log_event_sync("bot_started", {"ts": bot.time.time() if hasattr(bot, "time") else None, "owner": bot.OWNER_ID})
+    try:
+        logger.info("Stopping assistant...")
+        bot.assistant.stop()
+    except Exception:
+        logger.exception("Error stopping assistant")
 
-    # keep running
+    try:
+        logger.info("Stopping bot...")
+        bot.bot.stop()
+    except Exception:
+        logger.exception("Error stopping bot")
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    logger.info("DLK main starting...")
+
+    # initialize DB (if configured)
+    try:
+        bot.init_db_sync()
+    except Exception as e:
+        logger.warning("DB init failed: %s", e)
+
+    # import core re-exports
+    load_core()
+
+    # load plugins (these should import from DLK.core)
+    loaded = load_plugins("DLK.plugins")
+    logger.info("Plugins loaded: %s", loaded)
+
+    # start clients (assistant, call_py, bot)
+    try:
+        start_clients()
+    except Exception:
+        logger.error("Failed to start clients; aborting.")
+        stop_clients()
+        sys.exit(1)
+
+    # schedule restore_playing_on_start if available
+    try:
+        loop = asyncio.get_event_loop()
+        if bot.restore_playing_on_start is not None:
+            try:
+                loop.create_task(bot.restore_playing_on_start())
+                logger.info("Scheduled restore_playing_on_start()")
+            except Exception as e:
+                logger.warning("Could not schedule restore_playing_on_start: %s", e)
+    except Exception as e:
+        logger.debug("Event loop scheduling issue: %s", e)
+
+    # log start
+    try:
+        bot.log_event_sync("bot_started", {"ts": time.time(), "owner": bot.OWNER_ID})
+    except Exception:
+        # If time isn't imported here, fall back to bot.time
+        try:
+            bot.log_event_sync("bot_started", {"ts": bot.time.time(), "owner": bot.OWNER_ID})
+        except Exception:
+            pass
+
+    # keep alive with pyrogram.idle()
     from pyrogram import idle
     try:
+        logger.info("Entering idle() - bot is now running.")
         idle()
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received, shutting down.")
     finally:
-        try:
-            logger.info("Stopping clients...")
-            bot.call_py.stop()
-            bot.assistant.stop()
-            bot.bot.stop()
-        except Exception:
-            logger.exception("Error while stopping clients.")
+        stop_clients()
+        logger.info("DLK main stopped.")
 
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(async_main())
-    except KeyboardInterrupt:
-        logger.info("Shutting down due to KeyboardInterrupt")
+    main()
