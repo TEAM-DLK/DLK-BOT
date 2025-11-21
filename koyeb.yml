@@ -6,7 +6,7 @@ app:
     - name: dlk-bot
       source:
         type: git
-        repo: "https://github.com/giriyaka2001-ship-it/music"
+        repo: "https://github.com/TEAM-DLK/DLK-BOT"
         branch: "main"
       build:
         # Koyeb will build using your Dockerfile
