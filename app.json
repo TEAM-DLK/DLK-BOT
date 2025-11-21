@@ -1,0 +1,15 @@
+{
+  "name": "dlk-radio",
+  "description": "DLK Radio Telegram bot",
+  "repository": "https://github.com/giriyaka2001-ship-it/music",
+  "env": {
+    "API_ID": { "description": "Telegram API ID", "required": true },
+    "API_HASH": { "description": "Telegram API Hash", "required": true },
+    "BOT_TOKEN": { "description": "Bot token from BotFather", "required": true },
+    "ASSISTANT_SESSION": { "description": "Assistant session string (string session)", "required": false },
+    "OWNER_ID": { "description": "Owner user id", "required": true },
+    "MONGO_URI": { "description": "MongoDB connection string", "required": false },
+    "MONGO_DBNAME": { "description": "Mongo DB name", "required": false },
+    "LOG_CHANNEL_ID": { "description": "Optional log channel (username or id)", "required": false }
+  }
+}
