@@ -18,4 +18,4 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 COPY . /app
 
 # default command: run main.py (the launcher)
-CMD ["python", "main.py"]
+CMD ["python", "DLK.py"]
