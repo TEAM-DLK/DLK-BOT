@@ -1,26 +1,10 @@
-```python
 """
 Plugin: admin.py
 
-Contains owner/admin related commands:
-- /bl, /unbl (block/unblock groups)
-- /panel (owner private panel)
-- /start (private welcome)
-- help callbacks
+All shared symbols are imported from DLK.core so admin commands and owner panel
+have full access to DB, logging and utilities (no missing imports).
 """
-
-from pyrogram import filters
-from pyrogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
-
-from bot import (
-    bot,
-    db,
-    OWNER_ID,
-    log_event_sync,
-    is_group_blocked_sync,
-    block_group_sync,
-    unblock_group_sync,
-)
+from DLK.core import *
 import logging
 
 logger = logging.getLogger(__name__)
