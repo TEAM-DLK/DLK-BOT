@@ -1,13 +1,10 @@
 """
 DLK/core.py
 
-A small re-export shim so plugin modules can import all shared names from one place.
-
-Usage in plugins:
-    from DLK.core import bot, assistant, call_py, API_ID, RADIO_STATION, play_entry, ...
-This file imports the main `bot` module (bot.py) and exposes the commonly used
-objects, helpers and constants under the DLK.core namespace. Ensure `bot.py`
-is imported by the process before plugins are loaded (main.py already does this).
+Re-export shim for bot.py plus a startup_tasks list that plugins can append
+startup routines to. Plugins import from DLK.core and append async callables
+(or functions that return coroutines) to `startup_tasks`. main.py will run
+those tasks after starting the clients.
 """
 # Import the bot module (the main core file)
 import bot as _bot
@@ -155,6 +152,11 @@ track_watcher = getattr(_bot, "track_watcher", None)
 
 restore_playing_on_start = getattr(_bot, "restore_playing_on_start", None)
 
+# ====================== STARTUP TASKS ======================
+# Plugins can append async callables (or callables returning coroutines)
+# to this list. main.py will invoke them after clients are started.
+startup_tasks: List = []
+
 # __all__ makes it convenient to import *
 __all__ = [
     # stdlib
@@ -185,4 +187,6 @@ __all__ = [
     "is_group_blocked_sync", "block_group_sync", "unblock_group_sync", "dlk_privilege_validator",
     "radio_buttons", "player_controls_markup", "update_radio_timer", "leave_voice_chat", "store_play_state",
     "_safe_call_py_method", "prepare_entry_from_reply", "play_entry", "track_watcher", "restore_playing_on_start",
+    # startup tasks
+    "startup_tasks",
 ]
