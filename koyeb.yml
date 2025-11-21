@@ -12,7 +12,7 @@ app:
         # Koyeb will build using your Dockerfile
         type: "dockerfile"
         dockerfile_path: "Dockerfile"
-      run_command: "python main.py"
+      run_command: "python DLK.py"
       envs:
         - name: API_ID
           value: ""
