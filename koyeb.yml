@@ -1,0 +1,24 @@
+# Example Koyeb app spec that builds from your repository using the provided Dockerfile.
+# Replace repo URL and branch with your values.
+app:
+  name: dlk-radio
+  services:
+    - name: dlk-bot
+      source:
+        type: git
+        repo: "https://github.com/giriyaka2001-ship-it/music"
+        branch: "main"
+      build:
+        # Koyeb will build using your Dockerfile
+        type: "dockerfile"
+        dockerfile_path: "Dockerfile"
+      run_command: "python main.py"
+      envs:
+        - name: API_ID
+          value: ""
+        - name: API_HASH
+          value: ""
+        - name: BOT_TOKEN
+          value: ""
+        - name: ASSISTANT_SESSION
+          value: ""
