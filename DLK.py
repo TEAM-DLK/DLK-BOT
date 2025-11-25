@@ -795,7 +795,7 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
 
 async def _force_leave_call(chat_id: int):
     """
-    Assistant voice call leave එක මෙතනින් හරියටම handle කරනව.
+    Assistant voice call leave handle.
     """
     try:
         await call_py.leave_group_call(chat_id)
@@ -809,8 +809,8 @@ async def _force_leave_call(chat_id: int):
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
     """
-    cancel_watchers=False දාලා call කරනකොට (track_watcher තුලින්)
-    ඔය track_watcher task එක තමන්වම cancel වෙන්නවත් නෑ.
+    cancel_watchers=False  call  (track_watcher )
+     track_watcher task  cancel.
     """
     try:
         if chat_id in radio_tasks:
@@ -937,7 +937,7 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
             await play_entry(chat_id, next_entry)
             log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
         else:
-            # queue හිස් -> assistant leave + caption stop + buttons remove
+            # queue  -> assistant leave + caption stop + buttons remove
             try:
                 await leave_voice_chat(chat_id, cancel_watchers=False)
             except Exception:
@@ -1170,7 +1170,7 @@ async def general_stop_handler(_, message: Message):
     if not await dlk_privilege_validator(message):
         return await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
 
-    # state එක පලවෙනියා ගන්නවා - leave_voice_chat() ඇතුලේ clear කරන නිසා
+    # state  - leave_voice_chat()  clear 
     state = radio_state.get(chat_id)
     msg_id = state.get("msg_id") if state else None
 
