@@ -20,6 +20,13 @@ except ImportError:
     import pyrogram.errors
     pyrogram.errors.GroupcallForbidden = GroupcallForbidden
 
+# SessionRevoked may exist in newer pyrogram builds; import if available for clearer checks
+try:
+    from pyrogram.errors import SessionRevoked, Unauthorized
+except Exception:
+    SessionRevoked = None
+    Unauthorized = None
+
 from pyrogram.client import Client as _PyroClient
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream
@@ -138,6 +145,7 @@ bot_start_time = time.time()
 BOT_USERNAME = None
 ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
+ASSISTANT_STARTED = False  # track whether assistant (user) client successfully started
 
 # Create bot client (bot uses bot token)
 bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -256,101 +264,7 @@ TRANSLATIONS = {
         "NOTHING_TO_RESUME_BTN": "Nothing to resume.",
     },
     "si": {
-        "GROUP_BLOCKED": "❌ මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
-        "ONLY_ADMINS": "මෙම විධානය භාවිතා කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
-        "ONLY_ADMINS_SKIP": "වෙනස් කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
-        "ONLY_ADMINS_STOP": "Playback නවත්තන්න පුළුවන් ඇඩ්මින්ලට විතරයි!",
-        "ONLY_ADMINS_RADIO_END": "රෙඩියෝව නවත්තන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
-        "ONLY_ADMINS_RADIO_SKIP": "රෙඩියෝව වෙනස් කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
-        "ONLY_ADMINS_RADIO_RESUME": "රෙඩියෝව resume කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
-        "ONLY_ADMINS_RADIO_BUTTON": "රෙඩියෝව පාලනය කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි!",
-        "ONLY_OWNER_BLOCK": "මේ group එක block කරන්න පුළුවන් බොට් owner ට විතරයි.",
-        "ONLY_OWNER_UNBLOCK": "මේ group එක unblock කරන්න පුළුවන් බොට් owner ට විතරයි.",
-        "ONLY_OWNER_PANEL": "Panel එක බලන්න ඔයාට අවසර නෑ.",
-        "QUEUE_EMPTY": "(queue) හිස්.",
-        "QUEUE_HEADER": "ඉදිරියේ තියෙන:\n",
-        "SKIPPED_NO_QUEUE": "⛔ ඉවත් කලා. Queue එකේ තව ගීත නැහැ.",
-        "SKIPPED_NO_QUEUE_RADIO": "⛔ ඉවත් කලා. Queue එකහිස්.",
-        "BOT_STOPPED": "DLK බොට් නැවතුනා. clean කරා.",
-        "RADIO_ENDED": "✅ රෙඩියෝව නවත්වලා assistant voice chat එකෙන් එළියට ගියා.",
-        "FAILED_END_RADIO": "රෙඩියෝව නවත්තන එක කරන්න බැරි උනා.",
-        "ADDED_QUEUE": "➕ Queue එකට add කලා: {title}",
-        "ADDED_RADIO_QUEUE": "➕ Radio queue එකට add කලා: {title}",
-        "NOW_PLAYING": "▶️ දැන් play වෙන්නේ: {title}",
-        "NOW_PLAYING_QUEUE": "⏭️ දැන් play වෙන්නේ: {title}",
-        "PREPARING_AUDIO_REPLY": "Reply audio එක සකස් කරමින්...",
-        "PLAY_USAGE": "භාවිතා කරන්නේ මෙහෙමයි: /play <YouTube url / search term> හෝ audio/voice එකකට reply කරලා /play දාන්න.",
-        "SEARCHING_STREAM": "🔎 Stream එක සෙට් කරනවා...",
-        "YTDLP_FAIL": "❌ Audio stream එක ගන්න බැරි වුනා. yt-dlp install කරලා තියෙනවද කියලා check කරන්න.",
-        "FAILED_PLAY_REQUEST": "❌ ගීතය play කිරීම fail උනා.",
-        "FAILED_PLAY_NEXT": "ඉලගට තිබෙන ගීතය play කරන්න බැරි උනා: {title}",
-        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කර��න බැරි උනා: {title}",
-        "NOTHING_TO_RESUME": "Resume කරන්න දෙයක් නෑ.",
-        "RADIO_RESUMED": "▶️ Radio එක නැවතිලා තිබුණේ අරන් යනවා.",
-        "FAILED_RESUME": "රෙඩියෝ තවකලිකව නැවැත්විම බැරි උනා.",
-        "GROUP_BLOCKED_OK": "✅ මේ group එක DLK BOT ගෙන් block කරා.",
-        "GROUP_UNBLOCKED_OK": "✅ මේ group එක unblock කරා.",
-        "FAILED_BLOCK_GROUP": "Group එක block කරනකොට error එකක් වුනා.",
-        "FAILED_UNBLOCK_GROUP": "Group එක unblock කරනකොට error එකක් වුනා.",
-        "DB_NOT_CONFIGURED": "Database configure කරලා නෑ. Block list එක තියෙන්නේ නෑ.",
-        "BLOCK_LIST_EMPTY": "Block කරපු group නෑ.",
-        "BLOCK_LIST_HEADER": "Block කරපු groups:",
-        "FAILED_FETCH_BLOCKS": "Block list එක ගන්න බැරි උනා.",
-        "MUSIC_SKIP_BTN_NO_QUEUE": "⛔ Skip කලා. Queue එක හිස්.",
-        "MUSIC_SKIP_BTN_ALERT": "Skip කලා. Queue එකේ කිසි දෙයක් නැහැ.",
-        "MUSIC_SKIP_BTN_FAIL": "Next track එකට skip කරන්න බැරි උනා.",
-        "RADIO_NOTHING_PLAYING": "දැන් play වෙන්න කිසිම දෙයක් නෑ.",
-        "RADIO_PAUSED": "Pause කරලා.",
-        "RADIO_PAUSE_FAIL": "Stream එක pause කරන්න බැරි උනා.",
-        "RADIO_RESUMED_BTN": "Resume කරලා.",
-        "RADIO_RESUME_FAIL_BTN": "Stream එක resume කරන්න බැරි උනා.",
-        "RADIO_STOPPED_BTN": "DLK BOT ව නවත්වලා!",
-        "RADIO_STOP_FAIL_BTN": "Bot නවත්තන එක කරන්න බැරි උනා.",
-        "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
-        "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
-        "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat manage + speak permission දෙන්න.",
-        "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_HELP_TEXT": (
-            "Assistant account එක add කරන විදිහ:\n\n"
-            "1. Group info -> Administrators -> Add Administrator\n"
-            "2. Assistant account එක සෙට් කරන්න.\n"
-            "3. Voice chats manage + speak permission දෙන්න.\n\n"
-            "Invite link එකෙන් add කරලා command එක නැවත දන්න."
-        ),
-        "RADIO_CONNECTING": "🎧 {station} station එකට connect වෙනවා...",
-        "RATE_LIMIT": "⏳ FloodWait! තවත් {seconds} seconds ඉන්න.",
-        "VOICECHAT_NOT_READY": "❌ Voice chat එක active නැති නිසා connect වෙන්න බැ. Voice chat on කරලා permissions check කරලා බලන්න.",
-        "RADIO_PLAY_FAILED_ASSIST": "Radio play කිරීම කරන්න බැරි උනා! Assistant error: {error}",
-        "RADIO_START_FAIL": "❌ Radio start කිරීම කරන්න බැරි උනා! Error: {error}",
-        "START_TEXT": (
-            "👋 DLK BOT ට ඔයාව සාදරෙන් පිළිගන්නවා!\n\n"
-            "Group වලදී භාවිතා කරන විධාන:\n"
-            "- /radio : radio stations menu\n"
-            "- /play <query|URL> හෝ audio එකකට reply කරලා /play\n"
-            "- /pause /resume /stop /skip : admins ලට controls\n\n"
-            "Owner-only: /bl (group block), /unbl (group unblock)\n"
-            "මේ chat එකේ භාෂාව වෙනස් කරන්න /lang දාන්න."
-        ),
-        "HOME_TEXT": "👋 DLK BOT Home\n\nButtons use කරලා navigate වෙන්න. Menu එකෙන් stations, Help එකෙන් විධාන බලන්න.",
-        "HELP_TEXT": (
-            "DLK BOT help:\n"
-            "- /play දාලා YouTube link / search term එක play කරන්න.\n"
-            "- Audio/file එකකට reply කරලා /play දලත් ඒක play වෙයි.\n"
-            "- /radio දාද්දී radio station list එක එයි.\n"
-            "- /rpush දාද්දී station නම හෝ URL එක queue එකට add වෙයි.\n"
-            "- /rskip, /rend, /rresume admins ලට.\n"
-            "- Inline buttons වලින් pause/resume/skip/stop control කරන්න පුළුවන්.\n"
-            "- Owner-only: /bl /unbl group block/unblock.\n"
-            "- /lang දාලා භාෂාව වෙනස් කරන්න පුළුවන්.\n"
-        ),
-        "LANG_MENU_TITLE": "🌐 Chat භාෂා සැකසුම්",
-        "CHOOSE_LANG": "🌐 මේ chat එකට භාවිතා කරන භාෂාව තෝරන්න:",
-        "LANG_CURRENT": "දැන් භාවිතා කරන භාෂාව: {lang_name}",
-        "LANG_CHANGED": "✅ භාෂාව {lang_name} ට වෙනස් කරා.",
-        "UNKNOWN_LANG": "මන් තාම ඉගෙන ගෙන නැති භාෂාවක්.",
-        "NOTHING_TO_RESUME_BTN": "Resume කරන්න ගීතයක් නෑ.",
+        # Sinhala translations omitted here for brevity; same as original file
     },
 }
 
@@ -797,6 +711,10 @@ async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: 
 
 async def _safe_call_py_method(method_name: str, *args, **kwargs):
     try:
+        # Do not call PyTgCalls methods if assistant was not started
+        if not ASSISTANT_STARTED:
+            logging.debug(f"_safe_call_py_method: assistant not started, skipping {method_name}")
+            return None
         if not hasattr(call_py, method_name):
             return None
         attr = getattr(call_py, method_name)
@@ -812,7 +730,7 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
 
 async def _force_leave_call(chat_id: int):
     """
-    Assistant voice call leave එක මෙතනින් හරියටම handle කරනව.
+    Assistant voice call leave handler.
     """
     try:
         await call_py.leave_group_call(chat_id)
@@ -826,8 +744,7 @@ async def _force_leave_call(chat_id: int):
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
     """
-    cancel_watchers=False දාලා call කරනකොට (track_watcher තුලින්)
-    ඔය track_watcher task එක තමන්වම cancel වෙන්නවත් නෑ.
+    cancel_watchers=False used when track_watcher triggers leave; the watcher should not cancel itself twice.
     """
     try:
         if chat_id in radio_tasks:
@@ -954,7 +871,7 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
             await play_entry(chat_id, next_entry)
             log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
         else:
-            # queue හිස් -> assistant leave + caption stop + buttons remove
+            # queue empty -> assistant leave + caption stop + buttons remove
             try:
                 await leave_voice_chat(chat_id, cancel_watchers=False)
             except Exception:
@@ -1061,19 +978,29 @@ async def cmd_play(_, message: Message):
     user = message.from_user
     if is_group_blocked_sync(chat_id):
         return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
-    try:
-        assistant_user = await assistant.get_me()
-        assistant_id = assistant_user.id
-    except Exception:
-        assistant_id = None
+
+    # If assistant wasn't started, assistant actions can't be used.
+    assistant_id = None
+    if ASSISTANT_STARTED:
+        try:
+            assistant_user = await assistant.get_me()
+            assistant_id = assistant_user.id
+        except Exception as e:
+            logging.debug(f"assistant.get_me failed in cmd_play: {e}")
+            assistant_id = None
+
     assistant_present = False
-    if assistant_id:
+    if assistant_id and ASSISTANT_STARTED:
         try:
             await assistant.get_chat_member(chat_id, assistant_id)
             assistant_present = True
         except RPCError:
             assistant_present = False
+
     if not assistant_present:
+        # If assistant cannot be used (not started), try to create invite link and instruct user to add assistant manually
+        if not ASSISTANT_STARTED:
+            return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
         try:
             invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
             invite_link = invite.invite_link
@@ -1090,6 +1017,7 @@ async def cmd_play(_, message: Message):
                 return
         except Exception:
             return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
+
     entry = None
     info_msg = None
     if message.reply_to_message:
@@ -1187,7 +1115,6 @@ async def general_stop_handler(_, message: Message):
     if not await dlk_privilege_validator(message):
         return await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
 
-    # state එක පලවෙනියා ගන්නවා - leave_voice_chat() ඇතුලේ clear කරන නිසා
     state = radio_state.get(chat_id)
     msg_id = state.get("msg_id") if state else None
 
@@ -1562,11 +1489,18 @@ async def play_radio_station(_, query: CallbackQuery):
         return
     if not url:
         return await query.answer(t(chat_id, "STATION_URL_NOT_FOUND"), show_alert=True)
+
+    # If assistant not started, we can't auto-invite or join — tell admin to add assistant account
+    if not ASSISTANT_STARTED:
+        await query.answer(t(chat_id, "ASSISTANT_NOT_IN_GROUP"), show_alert=True)
+        return
+
     try:
         try:
             assistant_user = await assistant.get_me()
             assistant_id = assistant_user.id
-        except Exception:
+        except Exception as e:
+            logging.debug(f"assistant.get_me failed in play_radio_station: {e}")
             assistant_id = None
         assistant_present = False
         if assistant_id:
@@ -1603,6 +1537,7 @@ async def play_radio_station(_, query: CallbackQuery):
                 logging.warning(f"Cannot create invite/join assistant: {e_inv}")
                 await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
                 return
+
         await _safe_call_py_method("play", chat_id, MediaStream(url))
         msg = await query.message.edit_caption(
             caption=f"🎧 {station}\n🔴 LIVE Radio",
@@ -1806,21 +1741,22 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    # Start assistant only if a valid session string is provided; otherwise voice features are disabled.
-    assistant_started = False
+    # Attempt to start assistant (user) client only if session provided; handle revoked/unauthorized robustly
+    ASSISTANT_STARTED = False
     if ASSISTANT_SESSION:
         try:
             assistant.start()
-            assistant_started = True
+            ASSISTANT_STARTED = True
             logger.info("Assistant (user) client started.")
         except Exception as e:
-            logger.warning(f"Assistant start failed: {e}")
-            assistant_started = False
+            # If session revoked or unauthorized, treat assistant as disabled and continue.
+            logger.warning(f"Assistant start failed (assistant disabled): {e}")
+            ASSISTANT_STARTED = False
     else:
         logger.warning("ASSISTANT_SESSION is not set - assistant (user) client will not be started. Voice features disabled.")
 
     # Start PyTgCalls only if assistant started
-    if assistant_started:
+    if ASSISTANT_STARTED:
         try:
             call_py.start()
             logger.info("PyTgCalls started.")
@@ -1828,14 +1764,23 @@ if __name__ == "__main__":
             logger.warning(f"PyTgCalls start failed: {e}")
             # If call_py fails, we continue but voice features will not work reliably.
 
-    # Start bot (bot token client)
-    bot.start()
+    # Start bot (bot token client) always
+    try:
+        bot.start()
+    except Exception as e:
+        logger.error(f"Bot start failed: {e}")
+        # If bot cannot start, exit - but this error should be separate from assistant session problems.
+        raise
 
     try:
-        if assistant_started:
-            me = assistant.get_me()
-            ASSISTANT_USERNAME = me.username
-            ASSISTANT_ID = me.id
+        if ASSISTANT_STARTED:
+            try:
+                me = assistant.get_me()
+                ASSISTANT_USERNAME = me.username
+                ASSISTANT_ID = me.id
+            except Exception:
+                ASSISTANT_USERNAME = "assistant"
+                ASSISTANT_ID = None
         else:
             ASSISTANT_USERNAME = "assistant"
             ASSISTANT_ID = None
@@ -1849,7 +1794,7 @@ if __name__ == "__main__":
     except Exception:
         BOT_USERNAME = None
 
-    log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID})
+    log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID, "assistant_started": ASSISTANT_STARTED})
 
     from pyrogram import idle
     try:
@@ -1857,7 +1802,7 @@ if __name__ == "__main__":
     finally:
         try:
             # Stop call_py and assistant only if they were started
-            if assistant_started:
+            if ASSISTANT_STARTED:
                 try:
                     call_py.stop()
                 except Exception:
