@@ -10,6 +10,7 @@ youtube-search-python
 pyrogram==2.0.106
 Pillow
 TgCrypto
-pytgcalls==2.1.0
+git+https://github.com/pytgcalls/pytgcalls.git#egg=pytgcalls
+git+https://github.com/pyrogram/tgcalls.git#egg=tgcalls
 ntgcalls==2.0.6
 python-dotenv
