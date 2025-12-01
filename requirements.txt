@@ -4,7 +4,7 @@ youtube-search-python
 pyrogram
 aiofiles
 Pillow
-TgCrypto=1.2.5
+TgCrypto
 py-tgcalls
 ntgcalls==2.0.6
 python-dotenv=1.2.1
