@@ -273,7 +273,7 @@ TRANSLATIONS = {
         "SKIPPED_NO_QUEUE_RADIO": "⛔ ඉවත් කලා. Queue එකහිස්.",
         "BOT_STOPPED": "DLK බොට් නැවතුනා. clean කරා.",
         "RADIO_ENDED": "✅ රෙඩියෝව නවත්වලා assistant voice chat එකෙන් එළියට ගියා.",
-        "FAILED_END_RADIO": "රෙඩියෝව නවත්තන එක කරන්න බැරි උනා.",
+        "FAILED_END_RADIO": "රෙඩියෝව නවත්තන එක करना බැරි උනා.",
         "ADDED_QUEUE": "➕ Queue එකට add කලා: {title}",
         "ADDED_RADIO_QUEUE": "➕ Radio queue එකට add කලා: {title}",
         "NOW_PLAYING": "▶️ දැන් play වෙන්නේ: {title}",
@@ -284,7 +284,7 @@ TRANSLATIONS = {
         "YTDLP_FAIL": "❌ Audio stream එක ගන්න බැරි වුනා. yt-dlp install කරලා තියෙනවද කියලා check කරන්න.",
         "FAILED_PLAY_REQUEST": "❌ ගීතය play කිරීම fail උනා.",
         "FAILED_PLAY_NEXT": "ඉලගට තිබෙන ගීතය play කරන්න බැරි උනා: {title}",
-        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කර��න බැරි උනා: {title}",
+        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කරන්න බැරි උනා: {title}",
         "NOTHING_TO_RESUME": "Resume කරන්න දෙයක් නෑ.",
         "RADIO_RESUMED": "▶️ Radio එක නැවතිලා තිබුණේ අරන් යනවා.",
         "FAILED_RESUME": "රෙඩියෝ තවකලිකව නැවැත්විම බැරි උනා.",
@@ -910,6 +910,138 @@ async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any
             tmp_img = os.path.join(THUMB_CACHE_DIR, f"photo_{base_name}.jpg")
             thumb_path_local = await bot.download_media(reply_msg.photo, file_name=tmp_img)
             thumb_path = await _process_image_and_overlay(thumb_path_local, base_name, title)
+            try:
+                os.remove(thumb_path_local)
+            except Exception:
+                pass
+        else:
+            thumb_attr = getattr(media_field, "thumb", None)
+            if thumb_attr:
+                tmp_img = os.path.join(THUMB_CACHE_DIR, f"thumb_{base_name}.jpg")
+                try:
+                    thumb_local = await bot.download_media(thumb_attr, file_name=tmp_img)
+                    thumb_path = await _process_image_and_overlay(thumb_local, base_name, title)
+                    try:
+                        os.remove(thumb_local)
+                    except Exception:
+                        pass
+                except Exception:
+                    thumb_path = None
+        entry = {
+            "title": title,
+            "stream_url": local_path,
+            "webpage": None,
+            "thumbnail": thumb_path,
+            "duration": duration,
+            "is_local": True,
+        }
+        return entry
+    except Exception as e:
+        logging.debug(f"prepare_entry_from_reply failed: {e}")
+        return None
+
+# ---------- track_watcher ----------
+async def track_watcher(chat_id: int, duration: int, msg_id: int):
+    """
+    Wait track length; if queue empty -> auto stop & leave VC.
+    """
+    try:
+        await asyncio.sleep(max(1, duration) + 2)
+        q = radio_queue.get(chat_id, [])
+        if q:
+            next_entry = q.pop(0)
+            radio_queue[chat_id] = q
+            await play_entry(chat_id, next_entry)
+            log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
+        else:
+            # queue හිස් -> assistant leave + caption stop + buttons remove
+            try:
+                await leave_voice_chat(chat_id, cancel_watchers=False)
+            except Exception:
+                pass
+            try:
+                await bot.edit_message_caption(
+                    chat_id=chat_id,
+                    message_id=msg_id,
+                    caption=t(chat_id, "BOT_STOPPED"),
+                    reply_markup=None,
+                )
+            except Exception as e:
+                logging.debug(f"track_watcher edit caption failed {chat_id}/{msg_id}: {e}")
+            log_event_sync("music_track_autostop", {"chat_id": chat_id})
+    except asyncio.CancelledError:
+        return
+    except Exception as e:
+        logging.debug(f"track_watcher error {chat_id}: {e}")
+
+# ---------- play_entry ----------
+async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None):
+    try:
+        if chat_id in radio_tasks:
+            radio_tasks[chat_id].cancel()
+            radio_tasks.pop(chat_id, None)
+        stream_source = entry["stream_url"]
+        await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
+        thumb_path = None
+        thumb_val = entry.get("thumbnail")
+        title = entry.get("title") or "Unknown"
+        if thumb_val and isinstance(thumb_val, str) and os.path.isfile(thumb_val):
+            thumb_path = thumb_val
+        else:
+            if thumb_val and isinstance(thumb_val, str) and thumb_val.startswith("http"):
+                thumb_path = await get_thumb_from_url_or_webpage(thumb_val, entry.get("webpage"), title)
+            else:
+                thumb_path = await get_thumb_from_url_or_webpage(None, entry.get("webpage"), title)
+        caption = f"🎧 {t(chat_id, 'NOW_PLAYING', title=title)}"
+        try:
+            if thumb_path and os.path.isfile(thumb_path):
+                msg = await bot.send_photo(
+                    chat_id,
+                    photo=thumb_path,
+                    caption=caption,
+                    reply_markup=player_controls_markup(chat_id),
+                )
+            else:
+                msg = await bot.send_photo(
+                    chat_id,
+                    photo="https://files.catbox.moe/3o9qj5.jpg",
+                    caption=caption,
+                    reply_markup=player_controls_markup(chat_id),
+                )
+        except Exception:
+            msg = await bot.send_photo(
+                chat_id,
+                photo="https://files.catbox.moe/3o9qj5.jpg",
+                caption=caption,
+                reply_markup=player_controls_markup(chat_id),
+            )
+        duration = entry.get("duration")
+        try:
+            if duration is not None:
+                duration = int(duration)
+        except Exception:
+            duration = None
+        if not duration or duration <= 0:
+            duration = DEFAULT_FALLBACK_DURATION
+        start_time = time.time()
+        store_play_state(
+            chat_id,
+            title,
+            entry.get("stream_url"),
+            msg.id,
+            start_time,
+            elapsed=0.0,
+            paused=False,
+            duration=duration,
+        )
+        radio_paused.discard(chat_id)
+        radio_tasks[chat_id] = asyncio.create_task(
+            update_radio_timer(chat_id, msg.id, title, start_time, duration)
+        )
+        if chat_id in track_watchers:
+            try:
+                track_watchers[chat_id].cancel()
+            except Exception:e)
             try:
                 os.remove(thumb_path_local)
             except Exception:
