@@ -1,0 +1,12 @@
+version: "3.8"
+services:
+  dlk-bot:
+    build: .
+    container_name: dlk-bot
+    restart: unless-stopped
+    env_file:
+      - sample.env
+    volumes:
+      - ./downloads:/app/downloads
+      - ./cache:/app/cache
+    command: python DLK.py

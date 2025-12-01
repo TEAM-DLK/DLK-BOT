@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Simple start script (make executable: chmod +x start)
+python DLK.py

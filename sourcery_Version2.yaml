@@ -1,0 +1,5 @@
+# Optional Sourcery config (placeholder)
+version: 1
+exclude:
+  - tests/**
+  - migrations/**

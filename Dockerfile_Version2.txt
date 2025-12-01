@@ -1,0 +1,28 @@
+# Dockerfile for DLK bot (includes ffmpeg)
+FROM python:3.11-slim
+
+# install system deps and ffmpeg
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    build-essential \
+    gcc \
+    libffi-dev \
+    libssl-dev \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# copy requirements and install
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# copy app
+COPY . /app
+
+# ensure downloads/cache directories exist
+RUN mkdir -p /app/downloads /app/cache
+
+ENV PYTHONUNBUFFERED=1
+
+# Default command (heroku uses Procfile; Docker will use this if run directly)
+CMD ["python", "DLK.py"]
