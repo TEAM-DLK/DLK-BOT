@@ -22,7 +22,18 @@ except ImportError:
 
 from pyrogram.client import Client as _PyroClient
 from pytgcalls import PyTgCalls
-from pytgcalls.types import MediaStream
+# Keep MediaStream for older/other usages as a fallback
+try:
+    from pytgcalls.types import MediaStream
+except Exception:
+    MediaStream = None
+
+# Prefer AudioPiped input stream when available (used to play URLs/files via ffmpeg)
+try:
+    from pytgcalls.types.input_stream import AudioPiped
+except Exception:
+    AudioPiped = None
+
 from dotenv import load_dotenv
 
 try:
@@ -864,50 +875,95 @@ def store_play_state(
 # New helper: try multiple call_py methods to start streaming/joining voice call
 async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
     """
-    Attempt to start playback in the group call. Tries several method names
-    used across PyTgCalls/NTgCalls versions for compatibility:
-    - join_group_call
-    - play
-    - play_stream
-    - start_playout
-    - join_call
+    Attempt to start playback in the group call. Tries several approaches:
+    1) Preferred: create an AudioPiped input stream (ffmpeg-based) and call join_group_call/join_call/play* methods.
+    2) Fallback: try using MediaStream wrapper if available.
+    3) Last-resort: use _safe_call_py_method to call candidate method names.
     Returns True on success, False otherwise.
     """
     if not stream_source:
         return False
-    ms = MediaStream(stream_source)
-    # candidate method names (in order). adjust or add more names if necessary.
+
+    # 1) Try AudioPiped (most reliable for streaming URLs/files) if available
+    if AudioPiped is not None:
+        try:
+            logging.debug(f"Trying AudioPiped for chat {chat_id} with source {stream_source}")
+            audio_stream = AudioPiped(stream_source)
+            # Common method names for joining/playing
+            if hasattr(call_py, "join_group_call"):
+                res = call_py.join_group_call(chat_id, audio_stream)
+                if inspect.isawaitable(res):
+                    await res
+                logging.info(f"Stream started using join_group_call + AudioPiped for chat {chat_id}")
+                return True
+            if hasattr(call_py, "join_call"):
+                res = call_py.join_call(chat_id, audio_stream)
+                if inspect.isawaitable(res):
+                    await res
+                logging.info(f"Stream started using join_call + AudioPiped for chat {chat_id}")
+                return True
+            # Methods that accept stream-like objects
+            for name in ("play", "play_stream", "start_playout", "start_stream"):
+                if hasattr(call_py, name):
+                    res = getattr(call_py, name)(chat_id, audio_stream)
+                    if inspect.isawaitable(res):
+                        await res
+                    logging.info(f"Stream started using {name} + AudioPiped for chat {chat_id}")
+                    return True
+        except Exception as e:
+            logging.debug(f"AudioPiped attempt failed for chat {chat_id}: {e}")
+
+    # 2) Try MediaStream wrapper if available (older code path)
+    if MediaStream is not None:
+        try:
+            logging.debug(f"Trying MediaStream for chat {chat_id} with source {stream_source}")
+            ms = MediaStream(stream_source)
+            # candidate method names (in order)
+            candidates = [
+                ("join_group_call", (chat_id, ms), {}),
+                ("join_call", (chat_id, ms), {}),
+                ("play", (chat_id, ms), {}),
+                ("play_stream", (chat_id, ms), {}),
+                ("start_playout", (chat_id, ms), {}),
+                ("start_stream", (chat_id, ms), {}),
+            ]
+            for name, args, kwargs in candidates:
+                try:
+                    if hasattr(call_py, name):
+                        logging.debug(f"Attempting call_py.{name} for chat {chat_id}")
+                        res = getattr(call_py, name)(*args, **kwargs)
+                        if inspect.isawaitable(res):
+                            await res
+                        logging.info(f"Stream started using {name} for chat {chat_id}")
+                        return True
+                except Exception as e:
+                    logging.debug(f"call_py.{name} failed for chat {chat_id}: {e}")
+                    continue
+        except Exception as e:
+            logging.debug(f"MediaStream attempt failed for chat {chat_id}: {e}")
+
+    # 3) Last resort: try candidate method names with raw stream_source via _safe_call_py_method
     candidates = [
-        ("join_group_call", (chat_id, ms), {}),
-        ("join_call", (chat_id, ms), {}),
-        ("play", (chat_id, ms), {}),
-        ("play_stream", (chat_id, ms), {}),
-        ("start_playout", (chat_id, ms), {}),
-        ("start_stream", (chat_id, ms), {}),
+        ("join_group_call", (chat_id, stream_source), {}),
+        ("join_call", (chat_id, stream_source), {}),
+        ("play", (chat_id, stream_source), {}),
+        ("play_stream", (chat_id, stream_source), {}),
+        ("start_playout", (chat_id, stream_source), {}),
+        ("start_stream", (chat_id, stream_source), {}),
     ]
     for name, args, kwargs in candidates:
         try:
-            if hasattr(call_py, name):
-                logging.debug(f"Attempting call_py.{name} for chat {chat_id}")
-                res = getattr(call_py, name)(*args, **kwargs)
-                if inspect.isawaitable(res):
-                    await res
-                logging.info(f"Stream started using {name} for chat {chat_id}")
-                return True
-        except Exception as e:
-            logging.debug(f"call_py.{name} failed for chat {chat_id}: {e}")
-            # continue trying other methods
-            continue
-    # fallback using _safe_call_py_method tries
-    for name, args, kwargs in candidates:
-        try:
             res = await _safe_call_py_method(name, *args, **kwargs)
-            if res is not None:
+            # some implementations return None even on success; assume success if no exception
+            logging.info(f"Attempted safe_call {name} for chat {chat_id}, result={res}")
+            # If the method returned a truthy result, consider success
+            if res:
                 logging.info(f"Stream started using safe_call {name} for chat {chat_id}")
                 return True
         except Exception as e:
             logging.debug(f"_safe_call_py_method {name} failed for chat {chat_id}: {e}")
             continue
+
     logging.warning(f"All attempts to start stream failed for chat {chat_id}")
     return False
 
