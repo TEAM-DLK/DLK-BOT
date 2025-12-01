@@ -1,6 +1,6 @@
 # Full DLK.py (updated further to improve call start detection and add more fallbacks)
 # NOTE: This file is a modified version of the repository file at:
-# https://github.com/gamingdhana49-dotcom/bot/blob/1b6f339367481436a7ecb4e44ecd4ff947c935a0/DLK.py
+# https://github.com/TEAM-DLK/DLK-BOT/DLK.py
 #
 # Summary of additional changes in this version:
 # - Broadened _is_call_active_sync heuristics (try more internal attributes and shapes)
