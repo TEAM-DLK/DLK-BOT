@@ -6,6 +6,7 @@
 # - Added helper _call_maybe_await to call functions that may return awaitables.
 # - Reworked __main__ startup into an async main() so assistant/call_py/bot starts are awaited.
 # - Used _call_maybe_await in _restart_assistant_and_pytgcalls to avoid "coroutine was never awaited" warnings.
+# - Await pyrogram.idle() to avoid "coroutine 'idle' was never awaited".
 #
 # The rest of the file is preserved with minimal necessary adjustments.
 
@@ -303,9 +304,9 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic[...]
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන��[...]
         "ASSISTANT_INVITE_HELP_TEXT": (
             "Assistant account එක add කරන විදිහ:\n\n"
             "1. Group info -> Administrators -> Add Administrator\n"
@@ -837,7 +838,7 @@ async def _force_leave_call(chat_id: int):
             logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
             return
     except Exception as e:
-        logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
+        logging.debug(f"_force_leave_call leave_group_call_failed {chat_id}: {e}")
     try:
         await _safe_call_py_method("leave_call", chat_id)
     except Exception as e2:
@@ -2008,6 +2009,9 @@ if __name__ == "__main__":
         logger.warning(f"Database initialization failed: {e}")
 
     async def main():
+        # allow modifying module-level usernames/ids
+        global BOT_USERNAME, ASSISTANT_USERNAME, ASSISTANT_ID
+
         # Start assistant and PyTgCalls first so voice call features are available
         try:
             await _call_maybe_await(getattr(assistant, "start", None))
@@ -2045,8 +2049,8 @@ if __name__ == "__main__":
 
         from pyrogram import idle
         try:
-            # idle() blocks until a stop signal — this is how pyrogram examples run
-            idle()
+            # idle() is an async coroutine in recent pyrogram — await it
+            await idle()
         finally:
             try:
                 await _call_maybe_await(getattr(call_py, "stop", None))
