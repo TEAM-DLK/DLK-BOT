@@ -3,7 +3,7 @@ yt-dlp
 youtube-search-python
 pyrogram
 aiofiles
-Pillow=12
+Pillow
 TgCrypto=1.2.5
 py-tgcalls
 ntgcalls==2.0.6
