@@ -1,4 +1,3 @@
-ffmpeg
 aiofiles
 aiohttp>=3.8.1
 attrs
@@ -11,6 +10,6 @@ youtube-search-python
 pyrogram==2.0.106
 Pillow
 TgCrypto
-pytgcalls==2.2.8
+git+https://github.com/pytgcalls/pytgcalls.git@v2.2.8#egg=pytgcalls
 ntgcalls==2.0.6
 python-dotenv
