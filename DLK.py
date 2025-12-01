@@ -65,7 +65,7 @@ def _get_int_env(name: str, default: int = 0) -> int:
     except Exception:
         return default
 
-API_ID = _get_int_env("API_ID", 0)
+API_ID = _get_int_env("API_ID")
 API_HASH = os.environ.get("API_HASH", "") or ""
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "") or ""
 ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION")
@@ -74,7 +74,7 @@ if ASSISTANT_SESSION:
 else:
     ASSISTANT_SESSION = None
 
-OWNER_ID = _get_int_env("OWNER_ID", 0)
+OWNER_ID = _get_int_env("OWNER_ID")
 MONGO_URI = os.environ.get("MONGO_URI")
 MONGO_DBNAME = os.environ.get("MONGO_DBNAME", "dlk_radio")
 LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
