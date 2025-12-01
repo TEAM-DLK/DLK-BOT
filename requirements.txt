@@ -2,7 +2,7 @@ pymongo
 yt-dlp
 youtube-search-python
 pyrogram
-aiofiles=25.1.0
+aiofiles
 Pillow=12.0.0
 TgCrypto=1.2.5
 py-tgcalls
