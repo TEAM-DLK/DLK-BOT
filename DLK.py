@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 import os
 import re
 import time
@@ -6,7 +5,7 @@ import asyncio
 import logging
 import random
 import inspect
-from typing import Union, Optional, Dict, Any, List, Tuple
+from typing import Union, Optional, Dict, Any, List
 from urllib.parse import urlparse, parse_qs
 
 from pyrogram import Client, filters
@@ -64,15 +63,15 @@ async def _safe_handle_updates(self, updates):
 _PyroClient.handle_updates = _safe_handle_updates
 # ---------------------------
 
-API_ID = int(os.environ.get("API_ID") or 0)
-API_HASH = os.environ.get("API_HASH")
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
-ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION")
-OWNER_ID = int(os.getenv("OWNER_ID") or 0)
+API_ID = int(os.environ.get("API_ID", "") or "")
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION", "")
+OWNER_ID = int(os.getenv("OWNER_ID", "") or "")
 
 MONGO_URI = os.environ.get("MONGO_URI")
-MONGO_DBNAME = os.environ.get("MONGO_DBNAME")
-LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID")
+MONGO_DBNAME = os.environ.get("MONGO_DBNAME", "dlk_radio")
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
 
 YT_DLP_COOKIES = os.environ.get("YT_DLP_COOKIES")
 
@@ -134,17 +133,8 @@ ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
 
 bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-assistant = None
-call_py = None
-if ASSISTANT_SESSION:
-    try:
-        assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
-        call_py = PyTgCalls(assistant)
-    except Exception as e:
-        logging.warning(f"Assistant client / PyTgCalls init failed: {e}")
-        assistant = None
-        call_py = None
+assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
+call_py = PyTgCalls(assistant)
 
 db_client = None
 db = None
@@ -205,7 +195,7 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "Station URL not found!",
         "ASSISTANT_BLOCKED_GROUP": "This group is blocked from using DLK BOT.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant is not in this group. Please add the assistant account and try again.",
-        "ASSISTANT_INVITE_TEXT": "Assistant not in group. I've created an invite link — open the link and add the assistant account manually.",
+        "ASSISTANT_INVITE_TEXT": "Assistant not in group. I've created an invite link — add the assistant account manually and give it permission to speak.",
         "ASSISTANT_JOIN_INFO": "🤖 Assistant has joined the group. Please grant it permission to manage voice chats and speak.",
         "ASSISTANT_INVITE_FAIL_TEXT": "Assistant is not in this group and I couldn't create an invite automatically. Please add the assistant account to the group and try again.",
         "ASSISTANT_INVITE_HELP_TEXT": (
@@ -302,7 +292,7 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat permission දෙන්න.",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat permission දීලා බලන්න.",
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
         "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
         "ASSISTANT_INVITE_HELP_TEXT": (
@@ -763,71 +753,6 @@ def player_controls_markup(chat_id: int):
     ]
     return InlineKeyboardMarkup([controls, bottom])
 
-# ---------- Assistant helper ----------
-async def ensure_assistant_in_chat(chat_id: int) -> Tuple[bool, Optional[str], Optional[str]]:
-    """
-    Ensures the assistant user is present in the target chat.
-    Returns (is_present, invite_link_if_available, error_reason_if_any).
-    - If assistant not configured -> (False, None, "assistant_not_configured")
-    - If assistant already present -> (True, None, None)
-    - If assistant was added successfully via invite -> (True, invite_link, None)
-    - If failure but invite link available -> (False, invite_link, error_str)
-    - If failure and no invite -> (False, None, error_str)
-    """
-    if assistant is None:
-        return False, None, "assistant_not_configured"
-    try:
-        me = await assistant.get_me()
-        assistant_id = me.id
-    except Exception as e:
-        logging.debug(f"ensure_assistant_in_chat: assistant.get_me failed: {e}")
-        return False, None, f"assistant_get_me_failed:{e}"
-
-    # First try: is assistant already a member?
-    try:
-        member = await assistant.get_chat_member(chat_id, assistant_id)
-        status = getattr(member, "status", "").lower()
-        if status not in ("left", "kicked"):
-            return True, None, None
-    except RPCError as e:
-        logging.debug(f"assist.get_chat_member RPCError (not present or can't query): {e}")
-    except Exception as e:
-        logging.debug(f"assist.get_chat_member failed: {e}")
-
-    # Not present or unknown -> try to create an invite link using bot
-    invite_link = None
-    try:
-        # create_chat_invite_link requires the bot to be admin with invite permission
-        invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
-        invite_link = invite.invite_link
-    except Exception as e_create:
-        logging.debug(f"create_chat_invite_link failed: {e_create}")
-        # try the older export_chat_invite_link (may still require permissions)
-        try:
-            invite_link = await bot.export_chat_invite_link(chat_id)
-        except Exception as e_export:
-            logging.debug(f"export_chat_invite_link also failed: {e_export}")
-            return False, None, f"cannot_create_invite:{e_create};{e_export}"
-
-    # We now have an invite_link. Try to make the assistant join via the link (userbot join).
-    if invite_link:
-        try:
-            await assistant.join_chat(invite_link)
-            # double-check membership
-            try:
-                member = await assistant.get_chat_member(chat_id, assistant_id)
-                status = getattr(member, "status", "").lower()
-                if status not in ("left", "kicked"):
-                    return True, invite_link, None
-            except Exception:
-                # even if verification failed, assume join worked
-                return True, invite_link, None
-        except Exception as e_join:
-            logging.debug(f"assistant.join_chat failed: {e_join}")
-            return False, invite_link, f"assistant_join_failed:{e_join}"
-
-    return False, invite_link, "unknown_error"
-
 # ---------- TIMER / VC HELPERS ----------
 async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: float, track_duration: int):
     """
@@ -855,11 +780,7 @@ async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: 
 
 async def _safe_call_py_method(method_name: str, *args, **kwargs):
     try:
-        if call_py is None:
-            logging.debug(f"_safe_call_py_method: call_py not initialized, cannot call {method_name}")
-            return None
         if not hasattr(call_py, method_name):
-            logging.debug(f"_safe_call_py_method: call_py has no {method_name}")
             return None
         attr = getattr(call_py, method_name)
         if not callable(attr):
@@ -874,10 +795,11 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
 
 async def _force_leave_call(chat_id: int):
     """
-    Assistant voice call leave handle.
+    Assistant voice call leave එක මෙතනින් හරියටම handle කරනව.
     """
     try:
-        await _safe_call_py_method("leave_group_call", chat_id)
+        await call_py.leave_group_call(chat_id)
+        logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
     except Exception as e:
         logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
         try:
@@ -887,8 +809,8 @@ async def _force_leave_call(chat_id: int):
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
     """
-    cancel_watchers=False  call  (track_watcher )
-     track_watcher task  cancel.
+    cancel_watchers=False දාලා call කරනකොට (track_watcher තුලින්)
+    ඔය track_watcher task එක තමන්වම cancel වෙන්නවත් නෑ.
     """
     try:
         if chat_id in radio_tasks:
@@ -1015,7 +937,7 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
             await play_entry(chat_id, next_entry)
             log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
         else:
-            # queue  -> assistant leave + caption stop + buttons remove
+            # queue හිස් -> assistant leave + caption stop + buttons remove
             try:
                 await leave_voice_chat(chat_id, cancel_watchers=False)
             except Exception:
@@ -1042,15 +964,7 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
             radio_tasks[chat_id].cancel()
             radio_tasks.pop(chat_id, None)
         stream_source = entry["stream_url"]
-
-        # attempt to play via call_py (if available)
-        res = await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
-        if res is None:
-            logging.error(f"play_entry: playback could not be started (call_py missing or failed) for chat {chat_id}")
-            # ensure we cleanup if playback didn't start
-            await leave_voice_chat(chat_id)
-            return False
-
+        await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
         thumb_path = None
         thumb_val = entry.get("thumbnail")
         title = entry.get("title") or "Unknown"
@@ -1130,24 +1044,35 @@ async def cmd_play(_, message: Message):
     user = message.from_user
     if is_group_blocked_sync(chat_id):
         return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
-
-    # Ensure assistant is in the chat (and if not, try to create invite and have it join)
-    present, invite_link, reason = await ensure_assistant_in_chat(chat_id)
-    if not present:
-        # Assistant not configured
-        if assistant is None:
-            return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
-        # If we have an invite link, show it to user so they can add assistant manually
-        if invite_link:
-            kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
+    try:
+        assistant_user = await assistant.get_me()
+        assistant_id = assistant_user.id
+    except Exception:
+        assistant_id = None
+    assistant_present = False
+    if assistant_id:
+        try:
+            await assistant.get_chat_member(chat_id, assistant_id)
+            assistant_present = True
+        except RPCError:
+            assistant_present = False
+    if not assistant_present:
+        try:
+            invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+            invite_link = invite.invite_link
             try:
-                await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"), reply_markup=kb)
+                await assistant.join_chat(invite_link)
+                assistant_present = True
+                try:
+                    await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+                except Exception:
+                    pass
             except Exception:
-                await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"))
-            return
-        # else cannot create invite automatically
-        return await message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
-
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
+                await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"), reply_markup=kb)
+                return
+        except Exception:
+            return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
     entry = None
     info_msg = None
     if message.reply_to_message:
@@ -1245,7 +1170,7 @@ async def general_stop_handler(_, message: Message):
     if not await dlk_privilege_validator(message):
         return await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
 
-    # state  - leave_voice_chat()  clear 
+    # state එක පලවෙනියා ගන්නවා - leave_voice_chat() ඇතුලේ clear කරන නිසා
     state = radio_state.get(chat_id)
     msg_id = state.get("msg_id") if state else None
 
@@ -1620,37 +1545,48 @@ async def play_radio_station(_, query: CallbackQuery):
         return
     if not url:
         return await query.answer(t(chat_id, "STATION_URL_NOT_FOUND"), show_alert=True)
-
-    present, invite_link, reason = await ensure_assistant_in_chat(chat_id)
-    if not present:
-        if assistant is None:
-            await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
-            await query.answer(t(chat_id, "ASSISTANT_NOT_IN_GROUP"), show_alert=True)
-            return
-        if invite_link:
-            help_kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("📋 Invite Link", url=invite_link)],
-                [InlineKeyboardButton("ℹ️ How to add assistant", callback_data="assistant_invite_help")],
-                [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
-            ])
-            await query.message.reply_text(
-                t(chat_id, "ASSISTANT_INVITE_TEXT"),
-                reply_markup=help_kb,
-            )
-            await query.answer("Assistant not present - invite link sent", show_alert=True)
-            return
-        await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
-        await query.answer("Assistant not present and cannot create invite", show_alert=True)
-        return
-
     try:
-        res = await _safe_call_py_method("play", chat_id, MediaStream(url))
-        if res is None:
-            await leave_voice_chat(chat_id)
-            await query.message.reply_text(t(chat_id, "VOICECHAT_NOT_READY"))
-            await query.answer("Voice chat not ready!", show_alert=True)
-            return
-
+        try:
+            assistant_user = await assistant.get_me()
+            assistant_id = assistant_user.id
+        except Exception:
+            assistant_id = None
+        assistant_present = False
+        if assistant_id:
+            try:
+                await assistant.get_chat_member(chat_id, assistant_id)
+                assistant_present = True
+            except RPCError:
+                assistant_present = False
+        if not assistant_present:
+            try:
+                invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+                invite_link = invite.invite_link
+                try:
+                    await assistant.join_chat(invite_link)
+                    assistant_present = True
+                    try:
+                        await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+                    except Exception:
+                        pass
+                except Exception as e_join:
+                    logging.warning(f"Assistant failed to join via invite: {e_join}")
+                    assistant_present = False
+                    help_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Invite Link", url=invite_link)],
+                        [InlineKeyboardButton("ℹ️ How to add assistant", callback_data="assistant_invite_help")],
+                        [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
+                    ])
+                    await query.message.reply_text(
+                        t(chat_id, "ASSISTANT_INVITE_TEXT"),
+                        reply_markup=help_kb,
+                    )
+                    return
+            except Exception as e_inv:
+                logging.warning(f"Cannot create invite/join assistant: {e_inv}")
+                await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
+                return
+        await _safe_call_py_method("play", chat_id, MediaStream(url))
         msg = await query.message.edit_caption(
             caption=f"🎧 {station}\n🔴 LIVE Radio",
             reply_markup=player_controls_markup(chat_id),
@@ -1853,35 +1789,14 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    # Start assistant and PyTgCalls only if they were initialized
-    if assistant is not None:
-        try:
-            assistant.start()
-            logger.info("Assistant started.")
-        except Exception as e:
-            logger.warning(f"Assistant start failed: {e}")
-            assistant = None
-            call_py = None
-
-    if call_py is not None:
-        try:
-            call_py.start()
-            logger.info("PyTgCalls started.")
-        except Exception as e:
-            logger.warning(f"PyTgCalls start failed: {e}")
-            call_py = None
-
-    # Start main bot client
+    assistant.start()
+    call_py.start()
     bot.start()
 
     try:
-        if assistant is not None:
-            me = assistant.get_me()
-            ASSISTANT_USERNAME = me.username
-            ASSISTANT_ID = me.id
-        else:
-            ASSISTANT_USERNAME = "assistant"
-            ASSISTANT_ID = None
+        me = assistant.get_me()
+        ASSISTANT_USERNAME = me.username
+        ASSISTANT_ID = me.id
     except Exception:
         ASSISTANT_USERNAME = "assistant"
         ASSISTANT_ID = None
@@ -1899,10 +1814,8 @@ if __name__ == "__main__":
         idle()
     finally:
         try:
-            if call_py is not None:
-                call_py.stop()
-            if assistant is not None:
-                assistant.stop()
+            call_py.stop()
+            assistant.stop()
             bot.stop()
         except Exception:
             pass
