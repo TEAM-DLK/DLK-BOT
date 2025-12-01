@@ -67,7 +67,7 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION")
-OWNER_ID = int(os.getenv("OWNER_ID")
+OWNER_ID = int(os.getenv("OWNER_ID"))
 
 MONGO_URI = os.environ.get("MONGO_URI")
 MONGO_DBNAME = os.environ.get("MONGO_DBNAME")
