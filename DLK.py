@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 # Modified DLK.py
 # Source: https://github.com/udayangak277-sketch/MUSICBOT/blob/520f8232e540a56c1a11b5db9133ed03a7b1dad3/DLK.py
-# Changes:
-# - Added helper to ensure assistant is present in group.
-# - Added robust playback join logic that tries multiple PyTgCalls methods
-#   (play, join_group_call, join_call, start_stream) so assistant actually
-#   joins the voice chat and plays streams/local audio.
-# - Added automatic retry + restart of PyTgCalls/assistant when playback fails.
-# - Kept existing behavior and messages; added logging for failures.
+# Changes (current patch):
+# - Fixed coroutine warnings by awaiting start/stop coroutines where required.
+# - Added helper _call_maybe_await to call functions that may return awaitables.
+# - Reworked __main__ startup into an async main() so assistant/call_py/bot starts are awaited.
+# - Used _call_maybe_await in _restart_assistant_and_pytgcalls to avoid "coroutine was never awaited" warnings.
+#
+# The rest of the file is preserved with minimal necessary adjustments.
 
 import os
 import re
@@ -303,9 +303,9 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic[...]
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන��[...]
         "ASSISTANT_INVITE_HELP_TEXT": (
             "Assistant account එක add කරන විදිහ:\n\n"
             "1. Group info -> Administrators -> Add Administrator\n"
@@ -804,19 +804,44 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
         logging.debug(f"_safe_call_py_method {method_name} failed: {e}")
         return None
 
+async def _call_maybe_await(func, *args, **kwargs):
+    """
+    Call func and await if the result is awaitable.
+    Returns the call result or None on error.
+    """
+    try:
+        if not callable(func):
+            return None
+        res = func(*args, **kwargs)
+        if inspect.isawaitable(res):
+            return await res
+        return res
+    except Exception as e:
+        logging.debug(f"_call_maybe_await failed for {getattr(func, '__name__', str(func))}: {e}")
+        return None
+
 async def _force_leave_call(chat_id: int):
     """
     Assistant voice call leave එක මෙතනින් හරියටම handle කරනව.
     """
     try:
-        await call_py.leave_group_call(chat_id)
-        logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
+        # prefer library method which may be awaitable
+        res = None
+        if hasattr(call_py, "leave_group_call"):
+            res = call_py.leave_group_call(chat_id)
+            if inspect.isawaitable(res):
+                await res
+            else:
+                # if not awaitable, it's been executed already
+                pass
+            logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
+            return
     except Exception as e:
         logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
-        try:
-            await _safe_call_py_method("leave_call", chat_id)
-        except Exception as e2:
-            logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
+    try:
+        await _safe_call_py_method("leave_call", chat_id)
+    except Exception as e2:
+        logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
     """
@@ -920,23 +945,24 @@ async def _restart_assistant_and_pytgcalls():
     """
     try:
         logging.debug("_restart_assistant_and_pytgcalls: attempting to restart PyTgCalls and assistant")
+        # stop call_py (may be coroutine)
         try:
-            call_py.stop()
+            await _call_maybe_await(getattr(call_py, "stop", None))
         except Exception as e:
             logging.debug(f"_restart_assistant_and_pytgcalls: call_py.stop failed: {e}")
         await asyncio.sleep(0.5)
         try:
-            call_py.start()
+            await _call_maybe_await(getattr(call_py, "start", None))
         except Exception as e:
             logging.debug(f"_restart_assistant_and_pytgcalls: call_py.start failed: {e}")
         # Restart assistant session (best-effort)
         try:
-            assistant.stop()
+            await _call_maybe_await(getattr(assistant, "stop", None))
         except Exception:
             pass
         await asyncio.sleep(0.3)
         try:
-            assistant.start()
+            await _call_maybe_await(getattr(assistant, "start", None))
         except Exception as e:
             logging.debug(f"_restart_assistant_and_pytgcalls: assistant.start failed: {e}")
         await asyncio.sleep(0.5)
@@ -1981,44 +2007,63 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    # Start assistant and PyTgCalls first so voice call features are available
-    try:
-        assistant.start()
-    except Exception as e:
-        logger.warning(f"Assistant start failed: {e}")
-    try:
-        call_py.start()
-    except Exception as e:
-        logger.warning(f"PyTgCalls start failed: {e}")
-
-    try:
-        bot.start()
-    except Exception as e:
-        logger.warning(f"Bot start failed: {e}")
-
-    try:
-        me = assistant.get_me()
-        ASSISTANT_USERNAME = me.username
-        ASSISTANT_ID = me.id
-    except Exception:
-        ASSISTANT_USERNAME = "assistant"
-        ASSISTANT_ID = None
-
-    try:
-        bot_me = bot.get_me()
-        BOT_USERNAME = bot_me.username
-    except Exception:
-        BOT_USERNAME = None
-
-    log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID})
-
-    from pyrogram import idle
-    try:
-        idle()
-    finally:
+    async def main():
+        # Start assistant and PyTgCalls first so voice call features are available
         try:
-            call_py.stop()
-            assistant.stop()
-            bot.stop()
+            await _call_maybe_await(getattr(assistant, "start", None))
+        except Exception as e:
+            logger.warning(f"Assistant start failed: {e}")
+        try:
+            await _call_maybe_await(getattr(call_py, "start", None))
+        except Exception as e:
+            logger.warning(f"PyTgCalls start failed: {e}")
+
+        try:
+            await _call_maybe_await(getattr(bot, "start", None))
+        except Exception as e:
+            logger.warning(f"Bot start failed: {e}")
+
+        try:
+            me = None
+            try:
+                me = await _call_maybe_await(getattr(assistant, "get_me", None))
+            except Exception:
+                me = None
+            if me:
+                ASSISTANT_USERNAME = getattr(me, "username", None)
+                ASSISTANT_ID = getattr(me, "id", None)
+            else:
+                try:
+                    me = await _call_maybe_await(getattr(bot, "get_me", None))
+                    BOT_USERNAME = getattr(me, "username", None)
+                except Exception:
+                    BOT_USERNAME = None
         except Exception:
             pass
+
+        log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID})
+
+        from pyrogram import idle
+        try:
+            # idle() blocks until a stop signal — this is how pyrogram examples run
+            idle()
+        finally:
+            try:
+                await _call_maybe_await(getattr(call_py, "stop", None))
+            except Exception:
+                pass
+            try:
+                await _call_maybe_await(getattr(assistant, "stop", None))
+            except Exception:
+                pass
+            try:
+                await _call_maybe_await(getattr(bot, "stop", None))
+            except Exception:
+                pass
+
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("Shutdown requested by user.")
+    except Exception as e:
+        logger.error(f"Unexpected error in main: {e}", exc_info=True)
