@@ -1,24 +1,37 @@
-# DLK.py - Updated (2025-12-01)
-# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/1b6f339367481436a7ecb4e44ecd4ff947c935a0/DLK.py
+# DLK.py - Updated (2025-12-01) + Channel-play features (added 2025-12-01)
+# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/9f7bb96736bdccc270093b98aaf69c5d437c02c3/DLK.py
 #
-# Changes in this version:
-# - Fixed "coroutine ... was never awaited" warnings (await awaitables when probing call_py internals).
-# - Added safe_query_answer(...) wrapper to catch/query-answer RPC errors (including QUERY_ID_INVALID) so callback handling won't crash.
-# - Replaced all query.answer(...) calls with safe_query_answer(...)
-# - When _start_stream_in_call fails, dump call_py internals (best-effort) to logs to help debug why assistant didn't start.
-# - Added /debug_call_status owner-only command to print call_py internals to the owner (via private chat).
-# - Improved assistant presence messages and explicit instructions when ASSISTANT_SESSION is not set.
+# This version:
+# - Keeps all previous behavior and fixes.
+# - Adds channel linking (conet) to link a channel to a group.
+# - Persists channel links to MongoDB (if configured) or keeps in-memory fallback.
+# - When a linked channel posts a message containing a URL (YouTube or any http),
+#   or posts media (video, audio, document), the bot will attempt to play that
+#   media/stream automatically in all groups linked to that channel.
+# - Adds /conet to link/unlink a channel to the current group (admins only).
+# - Adds /cplay for manual channel-play requests (accepts URL or 'linked' text to explain use).
+# - Adds /cpend, /crend, /cvend to stop/ end channel-driven playback in a group.
+# - Adds UI: before the player image we send a short header message with a "✖ Close Player"
+#   inline button which deletes the header and player message when pressed.
 #
-# Notes:
-# - You provided the environment / package list (pyrogram 2.0.106, py-tgcalls 2.2.8, ntgcalls<3.0.0). This file keeps compatibility with those packages.
-# - This does not magically create a working assistant session; you must set ASSISTANT_SESSION (session string) in Heroku config vars.
-# - The most common causes of "assistant failed to start stream" remain:
-#   * Assistant account not in the group or missing voice permissions (manage voice chats + speak).
-#   * Library version mismatch (update py-tgcalls / ntgcalls if needed).
-#   * ffmpeg missing if you attempt to use AudioPiped (we detect and warn).
-# - After deploying this file, check Heroku logs. Use /debug_call_status (from owner in a private chat with bot) to dump call_py internals for debugging.
+# Notes / Limitations:
+# - The feature requires the bot be able to read channel messages (bot must be added to channel
+#   as a member or receive forwarded messages). If the channel is private or the bot has no access,
+#   automatic playback will not trigger.
+# - When channel posts plain text with a YouTube link, we use existing yt-dlp extraction to play audio stream.
+# - When channel posts video/audio media, we attempt to download and play it (may be large).
+# - Linking a channel will check that the provided chat is a CHANNEL and tries to find owner id;
+#   the command invoker must match the channel owner (similar to BrandrdXMusic logic).
+# - Behavior may depend on assistant presence/voice permissions; unchanged from previous logic.
 #
-# Full file contents follow.
+# To use:
+# - In a group (admins): /conet <channel_username_or_id>  -> links that channel to this group
+#   /conet disable  -> removes link
+# - When the linked channel posts a video/audio/YouTube link, bot will auto-play in the group.
+# - Or manually: /cplay <YouTube url or search terms>  (works similar to /play but invoked as channel-play)
+# - To stop channel playback in a group: /cpend  or /crend or /cvend (admin only)
+#
+# Full file content follows.
 
 import os
 import re
@@ -43,6 +56,9 @@ except ImportError:
         pass
     import pyrogram.errors
     pyrogram.errors.GroupcallForbidden = GroupcallForbidden
+
+# Added imports for channel admin checks
+from pyrogram.enums import ChatMembersFilter, ChatMemberStatus, ChatType
 
 from pyrogram.client import Client as _PyroClient
 from pytgcalls import PyTgCalls
@@ -187,6 +203,10 @@ call_py = PyTgCalls(assistant)
 
 db_client = None
 db = None
+
+# Channel links: group_chat_id -> channel_chat_id
+# persisted in DB if available (collection: channel_links)
+channel_links: Dict[int, int] = {}
 
 # TRANSLATIONS (same as before - omitted here to keep file length manageable in explanation)
 TRANSLATIONS = {
@@ -568,7 +588,7 @@ async def get_thumb_from_url_or_webpage(thumbnail_url: Optional[str], webpage: O
 
 # ---------- DB / LOG ----------
 def init_db_sync():
-    global db_client, db
+    global db_client, db, channel_links
     if not MONGO_URI or MongoClient is None:
         logging.info("DB disabled.")
         return
@@ -577,6 +597,18 @@ def init_db_sync():
     db.blocked.create_index("chat_id")
     db.logs.create_index("ts")
     db.langs.create_index("chat_id", unique=True)
+    # channel_links collection
+    db.channel_links.create_index("group_id", unique=True)
+    # load existing channel links
+    try:
+        for doc in db.channel_links.find({}):
+            group_id = doc.get("group_id")
+            chan_id = doc.get("channel_id")
+            if group_id and chan_id:
+                channel_links[int(group_id)] = int(chan_id)
+        logging.info(f"Loaded channel links: {len(channel_links)}")
+    except Exception as e:
+        logging.warning(f"Failed to load channel links: {e}")
     logging.info(f"Connected to MongoDB: {MONGO_DBNAME}")
 
 def _valid_log_target(lid: str) -> bool:
@@ -637,6 +669,36 @@ def unblock_group_sync(chat_id: int):
     if db is None:
         return
     db.blocked.delete_one({"chat_id": chat_id})
+
+# ---------- Channel link helpers ----------
+def set_channel_link(group_id: int, channel_id: int):
+    global channel_links, db
+    channel_links[group_id] = channel_id
+    try:
+        if db is not None:
+            db.channel_links.update_one(
+                {"group_id": group_id},
+                {"$set": {"group_id": group_id, "channel_id": channel_id, "ts": time.time()}},
+                upsert=True,
+            )
+    except Exception as e:
+        logging.warning(f"Failed to persist channel link for {group_id}: {e}")
+
+def remove_channel_link(group_id: int):
+    global channel_links, db
+    if group_id in channel_links:
+        channel_links.pop(group_id, None)
+    try:
+        if db is not None:
+            db.channel_links.delete_one({"group_id": group_id})
+    except Exception as e:
+        logging.warning(f"Failed to remove persisted channel link for {group_id}: {e}")
+
+def get_channel_link_for_group(group_id: int) -> Optional[int]:
+    return channel_links.get(group_id)
+
+def get_groups_linked_to_channel(channel_id: int) -> List[int]:
+    return [g for g, c in channel_links.items() if c == channel_id]
 
 async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> bool:
     try:
@@ -1167,6 +1229,8 @@ async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any
             media_field = reply_msg.audio
         elif reply_msg.document:
             media_field = reply_msg.document
+        elif reply_msg.video:
+            media_field = reply_msg.video
         if media_field is None:
             return None
         ext = os.path.splitext(getattr(media_field, "file_name", "") or "")[1] or ""
@@ -1178,6 +1242,8 @@ async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any
                 ext = ".mp3"
             elif "wav" in mime:
                 ext = ".wav"
+            elif "mp4" in mime or "video" in mime:
+                ext = ".mp4"
             else:
                 ext = ".raw"
         base_name = f"audio_{int(time.time())}_{random.randint(1000,9999)}"
@@ -1187,7 +1253,7 @@ async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any
             getattr(media_field, "title", None)
             or getattr(media_field, "file_name", None)
             or reply_msg.caption
-            or "Telegram Audio"
+            or "Telegram Media"
         )
         duration = getattr(media_field, "duration", None) or None
         thumb_path = None
@@ -1256,7 +1322,12 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
         logging.debug(f"track_watcher error {chat_id}: {e}")
 
 # ---------- play_entry ----------
-async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None):
+async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None, header_text: Optional[str] = None):
+    """
+    Play entry in chat_id.
+    If header_text is provided, send a small header message with a Close button before the player.
+    """
+    header_msg = None
     try:
         if chat_id in radio_tasks:
             radio_tasks[chat_id].cancel()
@@ -1277,6 +1348,16 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
                 thumb_path = await get_thumb_from_url_or_webpage(thumb_val, entry.get("webpage"), title)
             else:
                 thumb_path = await get_thumb_from_url_or_webpage(None, entry.get("webpage"), title)
+
+        # Send header (separate message) if provided; includes a Close Player button which will delete header and player msg.
+        if header_text:
+            try:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✖ Close Player", callback_data=f"close_player_{chat_id}")]])
+                header_msg = await bot.send_message(chat_id, header_text, reply_markup=kb)
+            except Exception as e:
+                logging.debug(f"Failed to send header message for {chat_id}: {e}")
+                header_msg = None
+
         caption = f"🎧 {t(chat_id, 'NOW_PLAYING', title=title)}"
         try:
             if thumb_path and os.path.isfile(thumb_path):
@@ -1335,6 +1416,15 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
         logging.error("Play entry failed", exc_info=True)
         try:
             await leave_voice_chat(chat_id)
+        except Exception:
+            pass
+        # if header was sent, try to remove it to keep UI tidy
+        try:
+            if header_msg:
+                try:
+                    await header_msg.delete()
+                except Exception:
+                    pass
         except Exception:
             pass
         return False
@@ -1692,7 +1782,7 @@ async def owner_panel(_, message: Message):
         logging.warning(f"Failed to fetch blocked list: {e}")
         await message.reply_text(t(chat_id, "FAILED_FETCH_BLOCKS"))
 
-# ---------- CALLBACK handlers use safe_query_answer ----------
+# ---------- Callback handlers use safe_query_answer ----------
 @bot.on_callback_query(filters.regex("^music_skip$"))
 async def cb_music_skip(_, query: CallbackQuery):
     chat_id = query.message.chat.id
@@ -1846,6 +1936,35 @@ async def cb_radio_stop(_, query: CallbackQuery):
     except Exception as e:
         logging.error(f"Stop failed via callback: {e}", exc_info=True)
         await safe_query_answer(query, t(chat_id, "RADIO_STOP_FAIL_BTN"), show_alert=True)
+
+# ---------- Close player callback (deletes header and player) ----------
+@bot.on_callback_query(filters.regex(r"^close_player_(\-?\d+)$"))
+async def cb_close_player(_, query: CallbackQuery):
+    try:
+        # message is the header message, we will delete it and also the player message if exists in radio_state
+        await safe_query_answer(query)
+        header_msg = query.message
+        chat_id = header_msg.chat.id
+        try:
+            await header_msg.delete()
+        except Exception:
+            pass
+        state = radio_state.get(chat_id)
+        if state:
+            try:
+                await bot.delete_messages(chat_id, state.get("msg_id"))
+            except Exception:
+                try:
+                    await bot.edit_message_caption(chat_id, state.get("msg_id"), caption=t(chat_id, "BOT_STOPPED"), reply_markup=None)
+                except Exception:
+                    pass
+        # also stop voice chat if desired
+        try:
+            await leave_voice_chat(chat_id)
+        except Exception:
+            pass
+    except Exception as e:
+        logging.debug(f"cb_close_player failed: {e}")
 
 # ---------- RADIO BUTTON PLAY ----------
 @bot.on_callback_query(filters.regex("^radio_play_"))
@@ -2129,7 +2248,167 @@ async def cmd_debug_call_status(_, message: Message):
     except Exception as e:
         await message.reply_text(f"Failed to dump call_py state: {e}")
 
-# ---------- MAIN ----------
+# ---------- CHANNEL LINKING COMMAND: /conet ----------
+@bot.on_message(filters.group & filters.command(["conet"]))
+async def cmd_conet(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+    if len(message.command) < 2:
+        # show current link if exists
+        linked = get_channel_link_for_group(chat_id)
+        if linked:
+            return await message.reply_text(f"This group is linked to channel: {linked}")
+        else:
+            return await message.reply_text("Usage: /conet <channel_username_or_id|disable>\nExample: /conet @mychannel or /conet -1001234567890")
+    arg = message.text.split(None, 1)[1].strip()
+    if arg.lower() == "disable":
+        remove_channel_link(chat_id)
+        return await message.reply_text("Channel linking disabled for this group.")
+    try:
+        # try to resolve provided chat identifier
+        target = await bot.get_chat(arg)
+    except Exception as e:
+        logging.debug(f"conet resolve failed: {e}")
+        return await message.reply_text("Could not find that channel. Provide a valid channel username or id.")
+    if target.type != ChatType.CHANNEL:
+        return await message.reply_text("Provided chat is not a channel. Please provide a channel username or id.")
+    # verify that the command invoker is the channel owner (similar to BrandrdXMusic)
+    try:
+        owner_id = None
+        owner_username = None
+        async for member in bot.get_chat_members(target.id, filter=ChatMembersFilter.ADMINISTRATORS):
+            try:
+                if getattr(member, "status", None) == ChatMemberStatus.OWNER:
+                    owner_id = member.user.id
+                    owner_username = getattr(member.user, "username", None)
+                    break
+            except Exception:
+                continue
+        if owner_id is None:
+            return await message.reply_text("Could not determine channel owner. Permission check failed.")
+        if owner_id != message.from_user.id:
+            return await message.reply_text(f"You must be the owner of the channel ({target.title}) to link it to this group. Owner: {owner_username or owner_id}")
+    except Exception as e:
+        logging.debug(f"conet owner check failed: {e}")
+        return await message.reply_text("Failed to verify channel ownership. Ensure the bot can access channel admins.")
+    # set link
+    set_channel_link(chat_id, target.id)
+    await message.reply_text(f"Linked channel {target.title} ({target.id}) to this group. When that channel posts YouTube links or media, the bot will attempt to play them in this group.")
+    log_event_sync("channel_link_set", {"group_id": chat_id, "channel_id": target.id, "by": message.from_user.id})
+
+# ---------- /cplay manual command ----------
+@bot.on_message(filters.group & filters.command(["cplay"]))
+async def cmd_cplay(_, message: Message):
+    chat_id = message.chat.id
+    if is_group_blocked_sync(chat_id):
+        return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+    # usage: /cplay <url|search>
+    if len(message.command) < 2:
+        linked = get_channel_link_for_group(chat_id)
+        if linked:
+            return await message.reply_text(f"This group is linked to channel {linked}. To play latest channel messages automatically, ensure the channel posts accessible messages. For manual play, use /cplay <YouTube URL or search terms>.")
+        return await message.reply_text("Usage: /cplay <YouTube url or search terms>")
+    query = message.text.split(None, 1)[1].strip()
+    # if user provided a URL or search terms, reuse extract_audio_url
+    info_msg = await message.reply_text(t(chat_id, "SEARCHING_STREAM"))
+    info = extract_audio_url(query)
+    if info is None or not info.get("stream_url"):
+        await info_msg.edit_text(t(chat_id, "YTDLP_FAIL"))
+        return
+    entry = {
+        "title": info.get("title"),
+        "stream_url": info.get("stream_url"),
+        "webpage": info.get("webpage_url"),
+        "thumbnail": info.get("thumbnail"),
+        "duration": info.get("duration"),
+        "is_local": False,
+    }
+    ok = await play_entry(chat_id, entry, reply_message=message)
+    if ok:
+        try:
+            await info_msg.edit_text(t(chat_id, "NOW_PLAYING", title=entry["title"]))
+        except Exception:
+            pass
+    else:
+        try:
+            await info_msg.edit_text(t(chat_id, "FAILED_PLAY_REQUEST"))
+        except Exception:
+            pass
+
+# ---------- channel messages handler: when channel posts, play in linked groups ----------
+@bot.on_message(filters.channel)
+async def channel_post_handler(_, message: Message):
+    try:
+        chan_id = message.chat.id
+        linked_groups = get_groups_linked_to_channel(chan_id)
+        if not linked_groups:
+            return
+        # Determine a best-effort entry from the channel message:
+        # 1) If message has media (video/audio/document/voice) -> prepare_entry_from_reply
+        # 2) Else if message contains URL(s), pick first http -> attempt to extract via yt-dlp
+        # 3) Else ignore
+        entry = None
+        try:
+            entry = await prepare_entry_from_reply(message)
+        except Exception as e:
+            logging.debug(f"prepare_entry_from_reply(channel) failed: {e}")
+            entry = None
+        if not entry and message.text:
+            # look for http url in text
+            m = re.search(r"(https?://[^\s]+)", message.text)
+            if m:
+                url = m.group(1)
+                info = extract_audio_url(url)
+                if info and info.get("stream_url"):
+                    entry = {
+                        "title": info.get("title"),
+                        "stream_url": info.get("stream_url"),
+                        "webpage": info.get("webpage_url"),
+                        "thumbnail": info.get("thumbnail"),
+                        "duration": info.get("duration"),
+                        "is_local": False,
+                    }
+        if not entry:
+            # no usable media/url -> nothing to play
+            return
+        # For each linked group, attempt to play (async, do not block)
+        for group_id in linked_groups:
+            # spawn independent tasks so slow groups don't block the loop
+            async def _play_for_group(gid, ent, ch_msg):
+                try:
+                    header_text = f"🔊 Channel {message.chat.title} posted: {ent.get('title')}\nStarting playback..."
+                    await play_entry(gid, ent, header_text=header_text)
+                    log_event_sync("channel_auto_play", {"channel_id": chan_id, "group_id": gid, "title": ent.get("title")})
+                except Exception as e:
+                    logging.debug(f"channel auto play failed for {gid}: {e}")
+            try:
+                asyncio.create_task(_play_for_group(group_id, entry, message))
+            except Exception as e:
+                logging.debug(f"Failed to schedule play task for group {group_id}: {e}")
+    except Exception as e:
+        logging.debug(f"channel_post_handler error: {e}")
+
+# ---------- group commands to stop channel playback: /cpend /crend /cvend ----------
+@bot.on_message(filters.group & filters.command(["cpend", "crend", "cvend"]))
+async def cmd_channel_stop(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"))
+    try:
+        await leave_voice_chat(chat_id)
+        # also remove channel link optionally? we keep link but stop current playback
+        await message.reply_text("Channel playback stopped for this group.")
+        log_event_sync("channel_play_stopped", {"group_id": chat_id, "by": message.from_user.id})
+    except Exception as e:
+        logging.debug(f"cmd_channel_stop failed: {e}")
+        await message.reply_text("Failed to stop channel playback.")
+
+# ---------- RADIO BUTTON PLAY (unchanged) ---------- (kept above)
+
+# ---------- START / FINALIZATION ----------
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
