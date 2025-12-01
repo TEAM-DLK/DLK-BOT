@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import re
 import time
@@ -132,9 +133,27 @@ BOT_USERNAME = None
 ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
 
+# Bot client (always)
 bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
-call_py = PyTgCalls(assistant)
+
+# Assistant client (optional) - only create if ASSISTANT_SESSION provided
+assistant = None
+call_py = None
+if ASSISTANT_SESSION:
+    try:
+        assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
+    except Exception as e:
+        logging.warning(f"Failed to create assistant client from session string: {e}")
+        assistant = None
+
+if assistant is not None:
+    try:
+        call_py = PyTgCalls(assistant)
+    except Exception as e:
+        logging.warning(f"Failed to initialize PyTgCalls: {e}")
+        call_py = None
+else:
+    call_py = None
 
 db_client = None
 db = None
@@ -292,9 +311,9 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat permission දීලා බලන්න.",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic[...]
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන��[...]
         "ASSISTANT_INVITE_HELP_TEXT": (
             "Assistant account එක add කරන විදිහ:\n\n"
             "1. Group info -> Administrators -> Add Administrator\n"
@@ -779,7 +798,14 @@ async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: 
         await asyncio.sleep(5)
 
 async def _safe_call_py_method(method_name: str, *args, **kwargs):
+    """
+    Safe wrapper for calling methods on call_py (PyTgCalls).
+    Returns the method result or None on failure / if call_py not initialized.
+    """
     try:
+        if call_py is None:
+            logging.debug(f"_safe_call_py_method: call_py is not initialized, cannot call {method_name}")
+            return None
         if not hasattr(call_py, method_name):
             return None
         attr = getattr(call_py, method_name)
@@ -796,16 +822,17 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
 async def _force_leave_call(chat_id: int):
     """
     Assistant voice call leave handle.
+    Tries leave_group_call first, then falls back to leave_call via _safe_call_py_method.
     """
     try:
-        await call_py.leave_group_call(chat_id)
-        logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
-    except Exception as e:
-        logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
-        try:
+        # prefer leave_group_call
+        res = await _safe_call_py_method("leave_group_call", chat_id)
+        if res is None:
+            # fallback
             await _safe_call_py_method("leave_call", chat_id)
-        except Exception as e2:
-            logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
+        logging.debug(f"_force_leave_call: attempted leave for {chat_id}")
+    except Exception as e:
+        logging.debug(f"_force_leave_call failed {chat_id}: {e}")
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
     """
@@ -964,7 +991,15 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
             radio_tasks[chat_id].cancel()
             radio_tasks.pop(chat_id, None)
         stream_source = entry["stream_url"]
-        await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
+
+        # attempt to play via call_py (if available)
+        res = await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
+        if res is None:
+            logging.error(f"play_entry: playback could not be started (call_py missing or failed) for chat {chat_id}")
+            # ensure we cleanup if playback didn't start
+            await leave_voice_chat(chat_id)
+            return False
+
         thumb_path = None
         thumb_val = entry.get("thumbnail")
         title = entry.get("title") or "Unknown"
@@ -1045,8 +1080,12 @@ async def cmd_play(_, message: Message):
     if is_group_blocked_sync(chat_id):
         return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
     try:
-        assistant_user = await assistant.get_me()
-        assistant_id = assistant_user.id
+        assistant_user = None
+        if assistant is not None:
+            assistant_user = await assistant.get_me()
+            assistant_id = assistant_user.id if assistant_user else None
+        else:
+            assistant_id = None
     except Exception:
         assistant_id = None
     assistant_present = False
@@ -1057,6 +1096,9 @@ async def cmd_play(_, message: Message):
         except RPCError:
             assistant_present = False
     if not assistant_present:
+        if assistant is None:
+            # assistant not configured - inform user
+            return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
         try:
             invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
             invite_link = invite.invite_link
@@ -1547,8 +1589,12 @@ async def play_radio_station(_, query: CallbackQuery):
         return await query.answer(t(chat_id, "STATION_URL_NOT_FOUND"), show_alert=True)
     try:
         try:
-            assistant_user = await assistant.get_me()
-            assistant_id = assistant_user.id
+            assistant_user = None
+            if assistant is not None:
+                assistant_user = await assistant.get_me()
+                assistant_id = assistant_user.id if assistant_user else None
+            else:
+                assistant_id = None
         except Exception:
             assistant_id = None
         assistant_present = False
@@ -1559,6 +1605,9 @@ async def play_radio_station(_, query: CallbackQuery):
             except RPCError:
                 assistant_present = False
         if not assistant_present:
+            if assistant is None:
+                await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
+                return
             try:
                 invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
                 invite_link = invite.invite_link
@@ -1586,7 +1635,14 @@ async def play_radio_station(_, query: CallbackQuery):
                 logging.warning(f"Cannot create invite/join assistant: {e_inv}")
                 await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
                 return
-        await _safe_call_py_method("play", chat_id, MediaStream(url))
+
+        res = await _safe_call_py_method("play", chat_id, MediaStream(url))
+        if res is None:
+            await leave_voice_chat(chat_id)
+            await query.message.reply_text(t(chat_id, "VOICECHAT_NOT_READY"))
+            await query.answer("Voice chat not ready!", show_alert=True)
+            return
+
         msg = await query.message.edit_caption(
             caption=f"🎧 {station}\n🔴 LIVE Radio",
             reply_markup=player_controls_markup(chat_id),
@@ -1789,14 +1845,34 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    assistant.start()
-    call_py.start()
+    # Start assistant and call_py only if available
+    if assistant is not None:
+        try:
+            assistant.start()
+        except Exception as e:
+            logger.warning(f"Assistant start failed: {e}")
+            # disable assistant and call_py on failure
+            assistant = None
+            call_py = None
+
+    if call_py is not None:
+        try:
+            call_py.start()
+        except Exception as e:
+            logger.warning(f"PyTgCalls start failed: {e}")
+            call_py = None
+
+    # Start bot (always)
     bot.start()
 
     try:
-        me = assistant.get_me()
-        ASSISTANT_USERNAME = me.username
-        ASSISTANT_ID = me.id
+        if assistant is not None:
+            me = assistant.get_me()
+            ASSISTANT_USERNAME = me.username
+            ASSISTANT_ID = me.id
+        else:
+            ASSISTANT_USERNAME = "assistant"
+            ASSISTANT_ID = None
     except Exception:
         ASSISTANT_USERNAME = "assistant"
         ASSISTANT_ID = None
@@ -1814,8 +1890,10 @@ if __name__ == "__main__":
         idle()
     finally:
         try:
-            call_py.stop()
-            assistant.stop()
+            if call_py is not None:
+                call_py.stop()
+            if assistant is not None:
+                assistant.stop()
             bot.stop()
         except Exception:
             pass
