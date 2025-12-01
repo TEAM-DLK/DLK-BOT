@@ -2,7 +2,7 @@ pyrogram
 aiofiles 
 Pillow 
 TgCrypto 
-py-tgcalls==2.2.9
+py-tgcalls
 ntgcalls==2.0.6 
 python-dotenv 
 aiohttp 
