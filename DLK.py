@@ -133,9 +133,8 @@ ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
 
 bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-# assistant and call_py will be created via helper (safer)
-assistant = None
-call_py = None
+assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
+call_py = PyTgCalls(assistant)
 
 db_client = None
 db = None
@@ -215,7 +214,7 @@ TRANSLATIONS = {
             "👋 Welcome to DLK BOT!\n\n"
             "Commands (groups):\n"
             "- /radio : stations\n"
-            "- /play <query|URL> or reply to an audio/voice file and use /play : play music\n"
+            "- /play <query|URL> or reply to audio with /play : play music\n"
             "- /pause /resume /stop /skip : playback controls (admins)\n\n"
             "Owner-only: /bl (block group), /unbl (unblock group)\n"
             "Use /lang to change the language."
@@ -240,7 +239,101 @@ TRANSLATIONS = {
         "NOTHING_TO_RESUME_BTN": "Nothing to resume.",
     },
     "si": {
-        # Sinhala translations omitted here for brevity in this file snippet but present in original script
+        "GROUP_BLOCKED": "❌ මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
+        "ONLY_ADMINS": "මෙම විධානය භාවිතා කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
+        "ONLY_ADMINS_SKIP": "වෙනස් කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
+        "ONLY_ADMINS_STOP": "Playback නවත්තන්න පුළුවන් ඇඩ්මින්ලට විතරයි!",
+        "ONLY_ADMINS_RADIO_END": "රෙඩියෝව නවත්තන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
+        "ONLY_ADMINS_RADIO_SKIP": "රෙඩියෝව වෙනස් කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
+        "ONLY_ADMINS_RADIO_RESUME": "රෙඩියෝව resume කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
+        "ONLY_ADMINS_RADIO_BUTTON": "රෙඩියෝව පාලනය කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි!",
+        "ONLY_OWNER_BLOCK": "මේ group එක block කරන්න පුළුවන් බොට් owner ට විතරයි.",
+        "ONLY_OWNER_UNBLOCK": "මේ group එක unblock කරන්න පුළුවන් බොට් owner ට විතරයි.",
+        "ONLY_OWNER_PANEL": "Panel එක බලන්න ඔයාට අවසර නෑ.",
+        "QUEUE_EMPTY": "(queue) හිස්.",
+        "QUEUE_HEADER": "ඉදිරියේ තියෙන:\n",
+        "SKIPPED_NO_QUEUE": "⛔ ඉවත් කලා. Queue එකේ තව ගීත නැහැ.",
+        "SKIPPED_NO_QUEUE_RADIO": "⛔ ඉවත් කලා. Queue එකහිස්.",
+        "BOT_STOPPED": "DLK බොට් නැවතුනා. clean කරා.",
+        "RADIO_ENDED": "✅ රෙඩියෝව නවත්වලා assistant voice chat එකෙන් එළියට ගියා.",
+        "FAILED_END_RADIO": "රෙඩියෝව නවත්තන එක කරන්න බැරි උනා.",
+        "ADDED_QUEUE": "➕ Queue එකට add කලා: {title}",
+        "ADDED_RADIO_QUEUE": "➕ Radio queue එකට add කලා: {title}",
+        "NOW_PLAYING": "▶️ දැන් play වෙන්නේ: {title}",
+        "NOW_PLAYING_QUEUE": "⏭️ දැන් play වෙන්නේ: {title}",
+        "PREPARING_AUDIO_REPLY": "Reply audio එක සකස් කරමින්...",
+        "PLAY_USAGE": "භාවිතා කරන්නේ මෙහෙමයි: /play <YouTube url / search term> හෝ audio/voice එකකට reply කරලා /play දාන්න.",
+        "SEARCHING_STREAM": "🔎 Stream එක සෙට් කරනවා...",
+        "YTDLP_FAIL": "❌ Audio stream එක ගන්න බැරි වුනා. yt-dlp install කරලා තියෙනවද කියලා check කරන්න.",
+        "FAILED_PLAY_REQUEST": "❌ ගීතය play කිරීම fail උනා.",
+        "FAILED_PLAY_NEXT": "ඉලගට තිබෙන ගීතය play කරන්න බැරි උනා: {title}",
+        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කරන්න බැරි උනා: {title}",
+        "NOTHING_TO_RESUME": "Resume කරන්න දෙයක් නෑ.",
+        "RADIO_RESUMED": "▶️ Radio එක නැවතිලා තිබුණේ අරන් යනවා.",
+        "FAILED_RESUME": "රෙඩියෝ තවකලිකව නැවැත්විම බැරි උනා.",
+        "GROUP_BLOCKED_OK": "✅ මේ group එක DLK BOT ගෙන් block කරා.",
+        "GROUP_UNBLOCKED_OK": "✅ මේ group එක unblock කරා.",
+        "FAILED_BLOCK_GROUP": "Group එක block කරනකොට error එකක් වුනා.",
+        "FAILED_UNBLOCK_GROUP": "Group එක unblock කරනකොට error එකක් වුනා.",
+        "DB_NOT_CONFIGURED": "Database configure කරලා නෑ. Block list එක තියෙන්නේ නෑ.",
+        "BLOCK_LIST_EMPTY": "Block කරපු group නෑ.",
+        "BLOCK_LIST_HEADER": "Block කරපු groups:",
+        "FAILED_FETCH_BLOCKS": "Block list එක ගන්න බැරි උනා.",
+        "MUSIC_SKIP_BTN_NO_QUEUE": "⛔ Skip කලා. Queue එක හිස්.",
+        "MUSIC_SKIP_BTN_ALERT": "Skip කලා. Queue එකේ කිසි දෙයක් නැහැ.",
+        "MUSIC_SKIP_BTN_FAIL": "Next track එකට skip කරන්න බැරි උනා.",
+        "RADIO_NOTHING_PLAYING": "දැන් play වෙන්න කිසිම දෙයක් නෑ.",
+        "RADIO_PAUSED": "Pause කරලා.",
+        "RADIO_PAUSE_FAIL": "Stream එක pause කරන්න බැරි උනා.",
+        "RADIO_RESUMED_BTN": "Resume කරලා.",
+        "RADIO_RESUME_FAIL_BTN": "Stream එක resume කරන්න බැරි උනා.",
+        "RADIO_STOPPED_BTN": "DLK BOT ව නවත්වලා!",
+        "RADIO_STOP_FAIL_BTN": "Bot නවත්තන එක කරන්න බැරි උනා.",
+        "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
+        "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
+        "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat permission දීලා බලන්න.",
+        "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_HELP_TEXT": (
+            "Assistant account එක add කරන විදිහ:\n\n"
+            "1. Group info -> Administrators -> Add Administrator\n"
+            "2. Assistant account එක සෙට් කරන්න.\n"
+            "3. Voice chats manage + speak permission දෙන්න.\n\n"
+            "Invite link එකෙන් add කරලා command එක නැවත දන්න."
+        ),
+        "RADIO_CONNECTING": "🎧 {station} station එකට connect වෙනවා...",
+        "RATE_LIMIT": "⏳ FloodWait! තවත් {seconds} seconds ඉන්න.",
+        "VOICECHAT_NOT_READY": "❌ Voice chat එක active නැති නිසා connect වෙන්න බැ. Voice chat on කරලා permissions check කරලා බලන්න.",
+        "RADIO_PLAY_FAILED_ASSIST": "Radio play කිරීම කරන්න බැරි උනා! Assistant error: {error}",
+        "RADIO_START_FAIL": "❌ Radio start කිරීම කරන්න බැරි උනා! Error: {error}",
+        "START_TEXT": (
+            "👋 DLK BOT ට ඔයාව සාදරෙන් පිළිගන්නවා!\n\n"
+            "Group වලදී භාවිතා කරන විධාන:\n"
+            "- /radio : radio stations menu\n"
+            "- /play <query|URL> හෝ audio එකකට reply කරලා /play\n"
+            "- /pause /resume /stop /skip : admins ලට controls\n\n"
+            "Owner-only: /bl (group block), /unbl (group unblock)\n"
+            "මේ chat එකේ භාෂාව වෙනස් කරන්න /lang දාන්න."
+        ),
+        "HOME_TEXT": "👋 DLK BOT Home\n\nButtons use කරලා navigate වෙන්න. Menu එකෙන් stations, Help එකෙන් විධාන බලන්න.",
+        "HELP_TEXT": (
+            "DLK BOT help:\n"
+            "- /play දාලා YouTube link / search term එක play කරන්න.\n"
+            "- Audio/file එකකට reply කරලා /play දලත් ඒක play වෙයි.\n"
+            "- /radio දාද්දී radio station list එක එයි.\n"
+            "- /rpush දාද්දී station නම හෝ URL එක queue එකට add වෙයි.\n"
+            "- /rskip, /rend, /rresume admins ලට.\n"
+            "- Inline buttons වලින් pause/resume/skip/stop control කරන්න පුළුවන්.\n"
+            "- Owner-only: /bl /unbl group block/unblock.\n"
+            "- /lang දාලා භාෂාව වෙනස් කරන්න පුළුවන්.\n"
+        ),
+        "LANG_MENU_TITLE": "🌐 Chat භාෂා සැකසුම්",
+        "CHOOSE_LANG": "🌐 මේ chat එකට භාවිතා කරන භාෂාව තෝරන්න:",
+        "LANG_CURRENT": "දැන් භාවිතා කරන භාෂාව: {lang_name}",
+        "LANG_CHANGED": "✅ භාෂාව {lang_name} ට වෙනස් කරා.",
+        "UNKNOWN_LANG": "මන් තාම ඉගෙන ගෙන නැති භාෂාවක්.",
+        "NOTHING_TO_RESUME_BTN": "Resume කරන්න ගීතයක් නෑ.",
     },
 }
 
@@ -933,7 +1026,7 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
                 track_watchers[chat_id].cancel()
             except Exception:
                 pass
-            track_watchers[chat_id] = asyncio.create_task(track_watcher(chat_id, duration, msg.id))
+        track_watchers[chat_id] = asyncio.create_task(track_watcher(chat_id, duration, msg.id))
         log_event_sync("music_started", {"chat_id": chat_id, "title": title})
         return True
     except Exception:
@@ -1033,41 +1126,659 @@ async def cmd_play(_, message: Message):
         except Exception:
             pass
 
-# (Remaining handlers and callbacks unchanged...) 
-# For brevity this file keeps all previously defined handlers and callbacks exactly as in the original script.
-# The critical changes are: safer assistant creation and a robust __main__ startup block below.
+# ---------- /skip /queue /stop ----------
+@bot.on_message(filters.group & filters.command(["skip", "s"]))
+async def cmd_skip(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS_SKIP"))
+    q = radio_queue.get(chat_id, [])
+    if not q:
+        await leave_voice_chat(chat_id)
+        await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE"))
+        log_event_sync("music_skipped_stop", {"chat_id": chat_id, "by": message.from_user.id})
+        return
+    next_entry = q.pop(0)
+    radio_queue[chat_id] = q
+    if chat_id in track_watchers:
+        try:
+            track_watchers[chat_id].cancel()
+        except Exception:
+            pass
+        track_watchers.pop(chat_id, None)
+    ok = await play_entry(chat_id, next_entry)
+    if ok:
+        await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        log_event_sync("music_skipped", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id})
+    else:
+        await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
 
-# ---------- Assistant creation helper (safer) ----------
-def create_assistant_client():
-    global assistant, call_py
-    if not ASSISTANT_SESSION:
-        logging.info("No ASSISTANT_SESSION provided -> assistant account disabled.")
-        assistant = None
-        call_py = None
-        return
-    if not API_ID or not API_HASH:
-        logging.warning("API_ID/API_HASH missing -> cannot initialize assistant client.")
-        assistant = None
-        call_py = None
-        return
+@bot.on_message(filters.group & filters.command(["queue", "q"]))
+async def cmd_queue(_, message: Message):
+    chat_id = message.chat.id
+    q = radio_queue.get(chat_id, [])
+    if not q:
+        return await message.reply_text(t(chat_id, "QUEUE_EMPTY"))
+    text = t(chat_id, "QUEUE_HEADER")
+    for i, item in enumerate(q[:10], start=1):
+        text += f"{i}. {item.get('title')}\n"
+    await message.reply_text(text)
+
+@bot.on_message(filters.group & filters.command(["stop", "end"]))
+async def general_stop_handler(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
+
+    # state එක පලවෙනියා ගන්නවා - leave_voice_chat() ඇතුලේ clear කරන නිසා
+    state = radio_state.get(chat_id)
+    msg_id = state.get("msg_id") if state else None
+
+    await leave_voice_chat(chat_id)
+
+    if msg_id:
+        try:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=msg_id,
+                caption=t(chat_id, "BOT_STOPPED"),
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+
+    await message.reply_text(t(chat_id, "BOT_STOPPED"))
+    log_event_sync("radio_stopped_text", {"chat_id": chat_id, "by": message.from_user.id})
+
+# ---------- RADIO COMMANDS ----------
+@bot.on_message(filters.group & filters.command(["radio"]))
+async def cmd_radio_menu(_, message: Message):
+    chat_id = message.chat.id
+    if is_group_blocked_sync(chat_id):
+        return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
+    kb = radio_buttons(0)
+    await message.reply_text("📻 Radio Stations - choose one:", reply_markup=kb)
+
+@bot.on_message(filters.group & filters.command(["rend"]))
+async def cmd_rend(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_END"))
     try:
-        assistant = Client(
-            "assistant_account",
-            api_id=API_ID,
-            api_hash=API_HASH,
-            session_string=ASSISTANT_SESSION,
-        )
-        call_py = PyTgCalls(assistant)
-        logging.info("Assistant client object created.")
+        await leave_voice_chat(chat_id)
+        await message.reply_text(t(chat_id, "RADIO_ENDED"))
+        log_event_sync("radio_rend", {"chat_id": chat_id, "by": message.from_user.id})
     except Exception as e:
-        assistant = None
-        call_py = None
-        logging.warning(f"Failed to create assistant client: {e}")
+        logging.warning(f"cmd_rend failed: {e}")
+        await message.reply_text(t(chat_id, "FAILED_END_RADIO"))
 
-# initialize assistant object at import time (no start)
-create_assistant_client()
+@bot.on_message(filters.group & filters.command(["rskip"]))
+async def cmd_rskip(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_SKIP"))
+    q = radio_queue.get(chat_id, [])
+    if not q:
+        await leave_voice_chat(chat_id)
+        await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE_RADIO"))
+        log_event_sync("radio_rskip_stop", {"chat_id": chat_id, "by": message.from_user.id})
+        return
+    next_entry = q.pop(0)
+    radio_queue[chat_id] = q
+    if chat_id in track_watchers:
+        try:
+            track_watchers[chat_id].cancel()
+        except Exception:
+            pass
+        track_watchers.pop(chat_id, None)
+    ok = await play_entry(chat_id, next_entry)
+    if ok:
+        await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        log_event_sync("radio_rskip", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id})
+    else:
+        await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT_RADIO", title=next_entry.get("title")))
 
-# ---------- MAIN (robust startup) ----------
+@bot.on_message(filters.group & filters.command(["rpush"]))
+async def cmd_rpush(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+    args = None
+    if len(message.command) > 1:
+        args = message.text.split(None, 1)[1].strip()
+    if not args:
+        return await message.reply_text(
+            "Usage: /rpush <station_name or stream_url>\nExample: /rpush SirasaFM OR /rpush https://stream.example.com/live"
+        )
+    station_name = args
+    stream_url = None
+    title = station_name
+    if station_name in RADIO_STATION:
+        stream_url = RADIO_STATION[station_name]
+        title = station_name
+    elif looks_like_url(station_name):
+        stream_url = station_name
+        title = station_name.split("/")[-1] or station_name
+    else:
+        for k in RADIO_STATION.keys():
+            if k.lower() == station_name.lower():
+                stream_url = RADIO_STATION[k]
+                title = k
+                break
+    if not stream_url:
+        return await message.reply_text("Could not find station or invalid URL. Provide a valid station name or URL.")
+    entry = {
+        "title": title,
+        "stream_url": stream_url,
+        "webpage": None,
+        "thumbnail": None,
+        "duration": None,
+        "is_local": False,
+    }
+    if chat_id not in radio_queue:
+        radio_queue[chat_id] = []
+    radio_queue[chat_id].append(entry)
+    await message.reply_text(t(chat_id, "ADDED_RADIO_QUEUE", title=title))
+    log_event_sync("radio_rpush", {"chat_id": chat_id, "title": title, "by": message.from_user.id})
+
+@bot.on_message(filters.group & filters.command(["rresume", "rremuse"]))
+async def cmd_rresume(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_RESUME"))
+    state = radio_state.get(chat_id)
+    if not state:
+        return await message.reply_text(t(chat_id, "NOTHING_TO_RESUME"))
+    try:
+        await _safe_call_py_method("resume_stream", chat_id)
+        await _safe_call_py_method("resume", chat_id)
+        elapsed = state.get("elapsed", 0.0) or 0.0
+        start_time = time.time() - elapsed
+        state["paused"] = False
+        state["elapsed"] = 0.0
+        state["start_time"] = start_time
+        radio_paused.discard(chat_id)
+        duration = state.get("duration")  # None => radio
+        store_play_state(
+            chat_id,
+            state.get("station"),
+            state.get("url"),
+            state.get("msg_id"),
+            start_time,
+            elapsed=0.0,
+            paused=False,
+            duration=duration,
+        )
+        if duration is not None:
+            if chat_id in radio_tasks:
+                try:
+                    radio_tasks[chat_id].cancel()
+                except Exception:
+                    pass
+                radio_tasks.pop(chat_id, None)
+            radio_tasks[chat_id] = asyncio.create_task(
+                update_radio_timer(chat_id, state.get("msg_id"), state.get("station"), start_time, duration)
+            )
+        try:
+            await bot.edit_message_reply_markup(chat_id, state.get("msg_id"), reply_markup=player_controls_markup(chat_id))
+        except Exception:
+            pass
+        await message.reply_text(t(chat_id, "RADIO_RESUMED"))
+        log_event_sync("radio_resumed_cmd", {"chat_id": chat_id, "by": message.from_user.id})
+    except Exception as e:
+        logging.debug(f"cmd_rresume failed: {e}")
+        await message.reply_text(t(chat_id, "FAILED_RESUME"))
+
+# ---------- BLOCK / UNBLOCK ----------
+@bot.on_message(filters.group & filters.command(["bl", "block"]))
+async def cmd_block_group(_, message: Message):
+    chat_id = message.chat.id
+    if not message.from_user or message.from_user.id != OWNER_ID:
+        return await message.reply_text(t(chat_id, "ONLY_OWNER_BLOCK"))
+    try:
+        block_group_sync(chat_id, message.from_user.id, reason="blocked by owner via /bl")
+        await message.reply_text(t(chat_id, "GROUP_BLOCKED_OK"))
+        log_event_sync("group_blocked", {"chat_id": chat_id, "by": message.from_user.id})
+    except Exception as e:
+        logging.warning(f"Failed to block group {chat_id}: {e}")
+        await message.reply_text(t(chat_id, "FAILED_BLOCK_GROUP"))
+
+@bot.on_message(filters.group & filters.command(["unbl", "unblock"]))
+async def cmd_unblock_group(_, message: Message):
+    chat_id = message.chat.id
+    if not message.from_user or message.from_user.id != OWNER_ID:
+        return await message.reply_text(t(chat_id, "ONLY_OWNER_UNBLOCK"))
+    try:
+        unblock_group_sync(chat_id)
+        await message.reply_text(t(chat_id, "GROUP_UNBLOCKED_OK"))
+        log_event_sync("group_unblocked", {"chat_id": chat_id, "by": message.from_user.id})
+    except Exception as e:
+        logging.warning(f"Failed to unblock group {chat_id}: {e}")
+        await message.reply_text(t(chat_id, "FAILED_UNBLOCK_GROUP"))
+
+# ---------- OWNER PANEL ----------
+@bot.on_message(filters.private & filters.command(["panel"]))
+async def owner_panel(_, message: Message):
+    chat_id = message.chat.id
+    if not message.from_user or message.from_user.id != OWNER_ID:
+        return await message.reply_text(t(chat_id, "ONLY_OWNER_PANEL"))
+    if db is None:
+        return await message.reply_text(t(chat_id, "DB_NOT_CONFIGURED"))
+    try:
+        blocked = list(db.blocked.find({}).sort("ts", -1).limit(100))
+        if not blocked:
+            return await message.reply_text(t(chat_id, "BLOCK_LIST_EMPTY"))
+        text_lines = [t(chat_id, "BLOCK_LIST_HEADER")]
+        for b in blocked:
+            text_lines.append(
+                f"- {b.get('chat_id')} (by {b.get('by')}, reason: {b.get('reason') or 'n/a'})"
+            )
+        await message.reply_text("\n".join(text_lines))
+    except Exception as e:
+        logging.warning(f"Failed to fetch blocked list: {e}")
+        await message.reply_text(t(chat_id, "FAILED_FETCH_BLOCKS"))
+
+# ---------- CALLBACK: skip/pause/resume/stop ----------
+@bot.on_callback_query(filters.regex("^music_skip$"))
+async def cb_music_skip(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    if not await dlk_privilege_validator(query):
+        return await query.answer(t(chat_id, "ONLY_ADMINS_SKIP"), show_alert=True)
+    q = radio_queue.get(chat_id, [])
+    if not q:
+        await leave_voice_chat(chat_id)
+        try:
+            await query.message.edit_caption(
+                caption=t(chat_id, "MUSIC_SKIP_BTN_NO_QUEUE"),
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        await query.answer(t(chat_id, "MUSIC_SKIP_BTN_ALERT"), show_alert=True)
+        log_event_sync(
+            "music_skipped_stop",
+            {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None},
+        )
+        return
+    next_entry = q.pop(0)
+    radio_queue[chat_id] = q
+    if chat_id in track_watchers:
+        try:
+            track_watchers[chat_id].cancel()
+        except Exception:
+            pass
+        track_watchers.pop(chat_id, None)
+    ok = await play_entry(chat_id, next_entry)
+    if ok:
+        try:
+            await query.message.edit_caption(
+                caption=t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]),
+                reply_markup=player_controls_markup(chat_id),
+            )
+        except Exception:
+            pass
+        await query.answer(t(chat_id, "MUSIC_SKIP_BTN_ALERT"), show_alert=False)
+        log_event_sync(
+            "music_skipped",
+            {"chat_id": chat_id, "title": next_entry["title"], "by": query.from_user.id if query.from_user else None},
+        )
+    else:
+        await query.answer(t(chat_id, "MUSIC_SKIP_BTN_FAIL"), show_alert=True)
+
+@bot.on_callback_query(filters.regex("^radio_pause$"))
+async def radio_pause_cb(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    if not await dlk_privilege_validator(query):
+        return await query.answer(t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
+    state = radio_state.get(chat_id)
+    if not state:
+        return await query.answer(t(chat_id, "RADIO_NOTHING_PLAYING"), show_alert=True)
+    try:
+        await _safe_call_py_method("pause_stream", chat_id)
+        await _safe_call_py_method("pause", chat_id)
+        start_time = state.get("start_time") or time.time()
+        elapsed = time.time() - start_time if start_time else state.get("elapsed", 0.0)
+        state["paused"] = True
+        state["elapsed"] = elapsed
+        state["start_time"] = None
+        radio_paused.add(chat_id)
+        store_play_state(
+            chat_id,
+            state.get("station"),
+            state.get("url"),
+            state.get("msg_id"),
+            None,
+            elapsed=elapsed,
+            paused=True,
+            duration=state.get("duration"),
+        )
+        try:
+            await query.message.edit_reply_markup(reply_markup=player_controls_markup(chat_id))
+        except Exception:
+            pass
+        await query.answer(t(chat_id, "RADIO_PAUSED"), show_alert=False)
+        log_event_sync("radio_paused", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
+    except Exception as e:
+        logging.debug(f"Pause failed: {e}")
+        await query.answer(t(chat_id, "RADIO_PAUSE_FAIL"), show_alert=True)
+
+@bot.on_callback_query(filters.regex("^radio_resume$"))
+async def radio_resume_cb(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    if not await dlk_privilege_validator(query):
+        return await query.answer(t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
+    state = radio_state.get(chat_id)
+    if not state:
+        return await query.answer(t(chat_id, "NOTHING_TO_RESUME_BTN"), show_alert=True)
+    try:
+        await _safe_call_py_method("resume_stream", chat_id)
+        await _safe_call_py_method("resume", chat_id)
+        elapsed = state.get("elapsed", 0.0) or 0.0
+        start_time = time.time() - elapsed
+        state["paused"] = False
+        state["elapsed"] = 0.0
+        state["start_time"] = start_time
+        radio_paused.discard(chat_id)
+        duration = state.get("duration")  # None => radio (no timer)
+        store_play_state(
+            chat_id,
+            state.get("station"),
+            state.get("url"),
+            state.get("msg_id"),
+            start_time,
+            elapsed=0.0,
+            paused=False,
+            duration=duration,
+        )
+        if duration is not None:
+            if chat_id in radio_tasks:
+                try:
+                    radio_tasks[chat_id].cancel()
+                except Exception:
+                    pass
+                radio_tasks.pop(chat_id, None)
+            radio_tasks[chat_id] = asyncio.create_task(
+                update_radio_timer(chat_id, state.get("msg_id"), state.get("station"), start_time, duration)
+            )
+        try:
+            await query.message.edit_reply_markup(reply_markup=player_controls_markup(chat_id))
+        except Exception:
+            pass
+        await query.answer(t(chat_id, "RADIO_RESUMED_BTN"), show_alert=False)
+        log_event_sync("radio_resumed", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
+    except Exception as e:
+        logging.debug(f"Resume failed: {e}")
+        await query.answer(t(chat_id, "RADIO_RESUME_FAIL_BTN"), show_alert=True)
+
+@bot.on_callback_query(filters.regex("^radio_stop$"))
+async def cb_radio_stop(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    if not await dlk_privilege_validator(query):
+        return await query.answer(t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
+    try:
+        await leave_voice_chat(chat_id)
+        try:
+            await query.message.delete()
+        except Exception:
+            try:
+                await query.message.edit_caption(
+                    caption=t(chat_id, "RADIO_STOPPED_BTN"),
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+        await query.answer(t(chat_id, "RADIO_STOPPED_BTN"), show_alert=False)
+        log_event_sync("radio_stopped", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
+    except Exception as e:
+        logging.error(f"Stop failed via callback: {e}", exc_info=True)
+        await query.answer(t(chat_id, "RADIO_STOP_FAIL_BTN"), show_alert=True)
+
+# ---------- RADIO BUTTON PLAY ----------
+@bot.on_callback_query(filters.regex("^radio_play_"))
+async def play_radio_station(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    station = query.data.replace("radio_play_", "")
+    url = RADIO_STATION.get(station)
+    user = query.from_user
+    if is_group_blocked_sync(chat_id):
+        await query.answer(t(chat_id, "ASSISTANT_BLOCKED_GROUP"), show_alert=True)
+        return
+    if not url:
+        return await query.answer(t(chat_id, "STATION_URL_NOT_FOUND"), show_alert=True)
+    try:
+        try:
+            assistant_user = await assistant.get_me()
+            assistant_id = assistant_user.id
+        except Exception:
+            assistant_id = None
+        assistant_present = False
+        if assistant_id:
+            try:
+                await assistant.get_chat_member(chat_id, assistant_id)
+                assistant_present = True
+            except RPCError:
+                assistant_present = False
+        if not assistant_present:
+            try:
+                invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+                invite_link = invite.invite_link
+                try:
+                    await assistant.join_chat(invite_link)
+                    assistant_present = True
+                    try:
+                        await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+                    except Exception:
+                        pass
+                except Exception as e_join:
+                    logging.warning(f"Assistant failed to join via invite: {e_join}")
+                    assistant_present = False
+                    help_kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("📋 Invite Link", url=invite_link)],
+                        [InlineKeyboardButton("ℹ️ How to add assistant", callback_data="assistant_invite_help")],
+                        [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
+                    ])
+                    await query.message.reply_text(
+                        t(chat_id, "ASSISTANT_INVITE_TEXT"),
+                        reply_markup=help_kb,
+                    )
+                    return
+            except Exception as e_inv:
+                logging.warning(f"Cannot create invite/join assistant: {e_inv}")
+                await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
+                return
+        await _safe_call_py_method("play", chat_id, MediaStream(url))
+        msg = await query.message.edit_caption(
+            caption=f"🎧 {station}\n🔴 LIVE Radio",
+            reply_markup=player_controls_markup(chat_id),
+        )
+        start_time = time.time()
+        store_play_state(chat_id, station, url, msg.id, start_time, elapsed=0.0, paused=False, duration=None)
+        radio_paused.discard(chat_id)
+        await query.answer(f"Now playing {station} via assistant!", show_alert=False)
+        log_event_sync("radio_started", {"chat_id": chat_id, "station": station, "by": user.id if user else None})
+    except FloodWait as e:
+        await leave_voice_chat(chat_id)
+        wait_time = getattr(e, "value", None) or getattr(e, "x", None) or "unknown"
+        await query.message.reply_text(t(chat_id, "RATE_LIMIT", seconds=wait_time))
+        await query.answer(f"Wait {wait_time}s", show_alert=True)
+    except ntgcalls.TelegramServerError:
+        await leave_voice_chat(chat_id)
+        await query.message.reply_text(t(chat_id, "VOICECHAT_NOT_READY"))
+        await query.answer("Voice chat not ready!", show_alert=True)
+    except RPCError as e:
+        await leave_voice_chat(chat_id)
+        await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error=str(e)))
+    except Exception as e:
+        await leave_voice_chat(chat_id)
+        logging.error("General radio play error", exc_info=True)
+        await query.message.reply_text(t(chat_id, "RADIO_START_FAIL", error=str(e)))
+
+# ---------- START / HELP / LANG ----------
+@bot.on_message(filters.command(["start"]) & filters.private)
+async def start_private(_, message: Message):
+    chat_id = message.chat.id
+    text = t(chat_id, "START_TEXT")
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🏠 Home", callback_data="home"),
+            InlineKeyboardButton("❓ Help", callback_data="help_info"),
+        ],
+        [
+            InlineKeyboardButton("📻 Menu", callback_data="radio_page_0"),
+            InlineKeyboardButton("🌐 Language", callback_data="open_lang_menu"),
+        ],
+        [
+            InlineKeyboardButton("👨‍💻 Dev", url=DEV_LINK),
+            InlineKeyboardButton("💬 Support", url=SUPPORT_LINK),
+        ],
+    ])
+    await message.reply_text(text, reply_markup=kb)
+
+@bot.on_callback_query(filters.regex("^home$"))
+async def cb_home(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    text = t(chat_id, "HOME_TEXT")
+    kb = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("📻 Menu", callback_data="radio_page_0"),
+            InlineKeyboardButton("❓ Help", callback_data="help_info"),
+        ],
+        [
+            InlineKeyboardButton("🌐 Language", callback_data="open_lang_menu"),
+        ],
+        [
+            InlineKeyboardButton("👨‍💻 Dev", url=DEV_LINK),
+            InlineKeyboardButton("💬 Support", url=SUPPORT_LINK),
+        ],
+    ])
+    await query.answer()
+    try:
+        await query.message.edit_text(text, reply_markup=kb)
+    except Exception:
+        await query.message.reply_text(text, reply_markup=kb)
+
+@bot.on_callback_query(filters.regex("^assistant_invite_help$"))
+async def assistant_invite_help(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    help_text = t(chat_id, "ASSISTANT_INVITE_HELP_TEXT")
+    await query.answer()
+    await query.message.reply_text(help_text)
+
+@bot.on_callback_query(filters.regex("^help_info$"))
+async def cb_help_info(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    help_text = t(chat_id, "HELP_TEXT")
+    await query.answer()
+    await query.message.reply_text(help_text)
+
+@bot.on_message(filters.group & filters.command(["lang", "setlang"]))
+async def cmd_set_language_group(_, message: Message):
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+    current = get_chat_lang(chat_id)
+    text = (
+        t(chat_id, "LANG_MENU_TITLE")
+        + "\n\n"
+        + t(chat_id, "CHOOSE_LANG")
+        + "\n"
+        + t(chat_id, "LANG_CURRENT", lang_name=LANG_NAMES.get(current, current))
+    )
+    await message.reply_text(text, reply_markup=lang_keyboard(current))
+
+@bot.on_message(filters.private & filters.command(["lang", "setlang"]))
+async def cmd_set_language_pm(_, message: Message):
+    chat_id = message.chat.id
+    current = get_chat_lang(chat_id)
+    text = (
+        t(chat_id, "LANG_MENU_TITLE")
+        + "\n\n"
+        + t(chat_id, "CHOOSE_LANG")
+        + "\n"
+        + t(chat_id, "LANG_CURRENT", lang_name=LANG_NAMES.get(current, current))
+    )
+    await message.reply_text(text, reply_markup=lang_keyboard(current))
+
+@bot.on_callback_query(filters.regex(r"^set_lang_(.+)$"))
+async def cb_set_language(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    lang_code = query.data.split("_", 2)[-1]
+    if lang_code not in LANG_NAMES:
+        await query.answer(t(chat_id, "UNKNOWN_LANG"), show_alert=True)
+        return
+    set_chat_lang(chat_id, lang_code)
+    current = lang_code
+    text = (
+        t(chat_id, "LANG_CHANGED", lang_name=LANG_NAMES[lang_code])
+        + "\n\n"
+        + t(chat_id, "LANG_CURRENT", lang_name=LANG_NAMES[lang_code])
+    )
+    try:
+        await query.message.edit_text(text, reply_markup=lang_keyboard(current))
+    except Exception:
+        await query.message.reply_text(text, reply_markup=lang_keyboard(current))
+    await query.answer()
+
+@bot.on_callback_query(filters.regex("^open_lang_menu$"))
+async def cb_open_lang_menu(_, query: CallbackQuery):
+    chat_id = query.message.chat.id
+    current = get_chat_lang(chat_id)
+    text = (
+        t(chat_id, "LANG_MENU_TITLE")
+        + "\n\n"
+        + t(chat_id, "CHOOSE_LANG")
+        + "\n"
+        + t(chat_id, "LANG_CURRENT", lang_name=LANG_NAMES.get(current, current))
+    )
+    await query.answer()
+    try:
+        await query.message.edit_text(text, reply_markup=lang_keyboard(current))
+    except Exception:
+        await query.message.reply_text(text, reply_markup=lang_keyboard(current))
+
+# ---------- RADIO MENU PAGE / CLOSE ----------
+@bot.on_callback_query(filters.regex(r"^radio_page_(\d+)$"))
+async def cb_radio_page(_, query: CallbackQuery):
+    try:
+        m = re.match(r"radio_page_(\d+)", query.data)
+        if not m:
+            return await query.answer()
+        page = int(m.group(1))
+        kb = radio_buttons(page)
+        try:
+            await query.message.edit_text("📻 Radio Stations - choose one:", reply_markup=kb)
+        except Exception:
+            try:
+                await query.message.edit_reply_markup(reply_markup=kb)
+            except Exception:
+                pass
+        await query.answer()
+    except Exception as e:
+        logging.debug(f"radio_page handler failed: {e}")
+        try:
+            await query.answer("Failed to load page.", show_alert=True)
+        except Exception:
+            pass
+
+@bot.on_callback_query(filters.regex(r"^radio_close$"))
+async def cb_radio_close(_, query: CallbackQuery):
+    try:
+        try:
+            await query.message.delete()
+        except Exception:
+            try:
+                await query.message.edit_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        await query.answer()
+    except Exception as e:
+        logging.debug(f"radio_close handler failed: {e}")
+        try:
+            await query.answer("Failed to close menu.", show_alert=True)
+        except Exception:
+            pass
+
+# ---------- MAIN ----------
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
@@ -1078,67 +1789,33 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    assistant_started = False
-    callpy_started = False
+    assistant.start()
+    call_py.start()
+    bot.start()
 
     try:
-        # start the assistant only if created
-        if assistant is not None:
-            try:
-                assistant.start()
-                assistant_started = True
-                logger.info("Assistant started.")
-            except Exception as e:
-                logger.warning(f"assistant.start() failed: {e}")
+        me = assistant.get_me()
+        ASSISTANT_USERNAME = me.username
+        ASSISTANT_ID = me.id
+    except Exception:
+        ASSISTANT_USERNAME = "assistant"
+        ASSISTANT_ID = None
 
-        # start PyTgCalls only if assistant started and call_py exists
-        if call_py is not None and assistant_started:
-            try:
-                call_py.start()
-                callpy_started = True
-                logger.info("PyTgCalls started.")
-            except Exception as e:
-                logger.warning(f"call_py.start() failed: {e}")
+    try:
+        bot_me = bot.get_me()
+        BOT_USERNAME = bot_me.username
+    except Exception:
+        BOT_USERNAME = None
 
-        # start the bot client (this is the bot token client)
+    log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID})
+
+    from pyrogram import idle
+    try:
+        idle()
+    finally:
         try:
-            bot.start()
-        except Exception as e:
-            logger.error(f"bot.start() failed: {e}")
-            raise
-
-        # fetch assistant metadata if available
-        try:
-            if assistant is not None and assistant_started:
-                me = assistant.get_me()
-                ASSISTANT_USERNAME = getattr(me, "username", None)
-                ASSISTANT_ID = getattr(me, "id", None)
+            call_py.stop()
+            assistant.stop()
+            bot.stop()
         except Exception:
-            ASSISTANT_USERNAME = "assistant"
-            ASSISTANT_ID = None
-
-        try:
-            bot_me = bot.get_me()
-            BOT_USERNAME = getattr(bot_me, "username", None)
-        except Exception:
-            BOT_USERNAME = None
-
-        log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID})
-
-        from pyrogram import idle
-        try:
-            idle()
-        finally:
-            # clean shutdown
-            try:
-                if callpy_started and call_py is not None:
-                    call_py.stop()
-                if assistant_started and assistant is not None:
-                    assistant.stop()
-                bot.stop()
-            except Exception:
-                pass
-
-    except Exception as e:
-        logger.exception(f"Unhandled startup error: {e}")
-        raise
+            pass
