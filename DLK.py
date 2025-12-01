@@ -63,7 +63,7 @@ async def _safe_handle_updates(self, updates):
 _PyroClient.handle_updates = _safe_handle_updates
 # ---------------------------
 
-API_ID = int(os.environ.get("API_ID")
+API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION")
