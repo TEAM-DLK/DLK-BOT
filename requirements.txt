@@ -1,4 +1,13 @@
 pymongo
 yt-dlp
 youtube-search-python
-pyrogram aiofiles Pillow TgCrypto python-dotenv aiohttp attrs multidict frozenlist yarl
+pyrogram
+aiofiles 
+Pillow 
+TgCrypto 
+python-dotenv 
+aiohttp 
+attrs 
+multidict 
+frozenlist 
+yarl
