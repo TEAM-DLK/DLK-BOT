@@ -63,15 +63,15 @@ async def _safe_handle_updates(self, updates):
 _PyroClient.handle_updates = _safe_handle_updates
 # ---------------------------
 
-API_ID = int(os.environ.get("API_ID", "") or "")
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION", "")
-OWNER_ID = int(os.getenv("OWNER_ID", "") or "")
+API_ID = int(os.environ.get("API_ID")
+API_HASH = os.environ.get("API_HASH")
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION")
+OWNER_ID = int(os.getenv("OWNER_ID")
 
 MONGO_URI = os.environ.get("MONGO_URI")
-MONGO_DBNAME = os.environ.get("MONGO_DBNAME", "dlk_radio")
-LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
+MONGO_DBNAME = os.environ.get("MONGO_DBNAME")
+LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID")
 
 YT_DLP_COOKIES = os.environ.get("YT_DLP_COOKIES")
 
