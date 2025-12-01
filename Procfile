@@ -1,1 +1,2 @@
-worker: python DLK.py
+# use a worker dyno (no webserver needed)
+worker: bash start.sh
