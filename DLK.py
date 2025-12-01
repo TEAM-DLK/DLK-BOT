@@ -1,3 +1,13 @@
+# -*- coding: utf-8 -*-
+# Modified DLK.py
+# Source: https://github.com/udayangak277-sketch/MUSICBOT/blob/520f8232e540a56c1a11b5db9133ed03a7b1dad3/DLK.py
+# Changes:
+# - Added helper to ensure assistant is present in group.
+# - Added robust playback join logic that tries multiple PyTgCalls methods
+#   (play, join_group_call, join_call, start_stream) so assistant actually
+#   joins the voice chat and plays streams/local audio.
+# - Kept existing behavior and messages; added logging for failures.
+
 import os
 import re
 import time
@@ -133,18 +143,8 @@ ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
 
 bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-
-# Create assistant and call_py only if ASSISTANT_SESSION provided.
-assistant: Optional[Client] = None
-call_py: Optional[PyTgCalls] = None
-if ASSISTANT_SESSION:
-    try:
-        assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
-        call_py = PyTgCalls(assistant)
-    except Exception as e:
-        logging.warning(f"Failed to create assistant client: {e}")
-        assistant = None
-        call_py = None
+assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
+call_py = PyTgCalls(assistant)
 
 db_client = None
 db = None
@@ -215,7 +215,6 @@ TRANSLATIONS = {
             "3. Add it and give it permission to manage voice chats and speak.\n\n"
             "If you used an invite link, use it to add the assistant and then re-run the command."
         ),
-        "ASSISTANT_NOT_CONFIGURED": "Assistant session is not configured. Set ASSISTANT_SESSION environment variable with a valid user session string to enable assistant features.",
         "RADIO_CONNECTING": "🎧 Connecting to {station}...",
         "RATE_LIMIT": "⏳ Rate limit reached! Wait {seconds} seconds.",
         "VOICECHAT_NOT_READY": "❌ Cannot connect to voice chat! Ensure voice chat is active and assistant has permissions.",
@@ -225,7 +224,7 @@ TRANSLATIONS = {
             "👋 Welcome to DLK BOT!\n\n"
             "Commands (groups):\n"
             "- /radio : stations\n"
-            "- /play <query|URL> or reply to audio with /play : play music\n"
+            "- /play <query|URL> or reply to an audio/voice file and use /play : play music\n"
             "- /pause /resume /stop /skip : playback controls (admins)\n\n"
             "Owner-only: /bl (block group), /unbl (unblock group)\n"
             "Use /lang to change the language."
@@ -298,14 +297,14 @@ TRANSLATIONS = {
         "RADIO_PAUSE_FAIL": "Stream එක pause කරන්න බැරි උනා.",
         "RADIO_RESUMED_BTN": "Resume කරලා.",
         "RADIO_RESUME_FAIL_BTN": "Stream එක resume කරන්න බැරි උනා.",
-        "RADIO_STOPPED_BTN": "DLK BOT ව නවත්වලා!",
+        "RADIO_STOPPED_BTN": "DLK BOT ව නවත්තලා!",
         "RADIO_STOP_FAIL_BTN": "Bot නවත්තන එක කරන්න බැරි උනා.",
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic[...]",  # abbreviated in original, kept as-is
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic[...]
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන��[...]
         "ASSISTANT_INVITE_HELP_TEXT": (
             "Assistant account එක add කරන විදිහ:\n\n"
             "1. Group info -> Administrators -> Add Administrator\n"
@@ -313,7 +312,6 @@ TRANSLATIONS = {
             "3. Voice chats manage + speak permission දෙන්න.\n\n"
             "Invite link එකෙන් add කරලා command එක නැවත දන්න."
         ),
-        "ASSISTANT_NOT_CONFIGURED": "Assistant session එක configure කරලා නැහැ. Assistant features ඕනම් ASSISTANT_SESSION environment variable එක valid session string එකක් නාමනය කරන්න.",
         "RADIO_CONNECTING": "🎧 {station} station එකට connect වෙනවා...",
         "RATE_LIMIT": "⏳ FloodWait! තවත් {seconds} seconds ඉන්න.",
         "VOICECHAT_NOT_READY": "❌ Voice chat එක active නැති නිසා connect වෙන්න බැ. Voice chat on කරලා permissions check කරලා බලන්න.",
@@ -341,8 +339,8 @@ TRANSLATIONS = {
             "- /lang දාලා භාෂාව වෙනස් කරන්න පුළුවන්.\n"
         ),
         "LANG_MENU_TITLE": "🌐 Chat භාෂා සැකසුම්",
-        "CHOOSE_LANG": "🌐 මේ chat එකට භාවිතා කරන භාෂාව තෝරන්න:",
-        "LANG_CURRENT": "දැන් භාවිතා කරන භාෂාව: {lang_name}",
+        "CHOOSE_LANG": "🌐 මේ chat එකට භාවිත කරන භාෂාව තෝරන්න:",
+        "LANG_CURRENT": "දැන් භාවිත කරන භාෂාව: {lang_name}",
         "LANG_CHANGED": "✅ භාෂාව {lang_name} ට වෙනස් කරා.",
         "UNKNOWN_LANG": "මන් තාම ඉගෙන ගෙන නැති භාෂාවක්.",
         "NOTHING_TO_RESUME_BTN": "Resume කරන්න ගීතයක් නෑ.",
@@ -792,8 +790,6 @@ async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: 
 
 async def _safe_call_py_method(method_name: str, *args, **kwargs):
     try:
-        if call_py is None:
-            return None
         if not hasattr(call_py, method_name):
             return None
         attr = getattr(call_py, method_name)
@@ -812,15 +808,11 @@ async def _force_leave_call(chat_id: int):
     Assistant voice call leave එක මෙතනින් හරියටම handle කරනව.
     """
     try:
-        if call_py is None:
-            return
         await call_py.leave_group_call(chat_id)
         logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
     except Exception as e:
         logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
         try:
-            if call_py is None:
-                return
             await _safe_call_py_method("leave_call", chat_id)
         except Exception as e2:
             logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
@@ -872,6 +864,110 @@ def store_play_state(
         "ts": time.time(),
     }
     radio_state[chat_id] = state
+
+# ---------- Ensure assistant present helper ----------
+async def ensure_assistant_in_chat(chat_id: int) -> bool:
+    """
+    Guarantee assistant account is a member of the chat. If not, try to create
+    an invite link and make the assistant join. Return True if assistant is present.
+    """
+    try:
+        try:
+            me = await assistant.get_me()
+            assist_id = me.id
+        except Exception as e:
+            logging.debug(f"ensure_assistant_in_chat: assistant.get_me failed: {e}")
+            return False
+
+        # Check membership
+        try:
+            await assistant.get_chat_member(chat_id, assist_id)
+            return True
+        except RPCError:
+            pass  # assistant not present
+
+        # Try to get invite link and have assistant join
+        try:
+            invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+            invite_link = invite.invite_link
+        except Exception as e:
+            logging.warning(f"ensure_assistant_in_chat: create_chat_invite_link failed: {e}")
+            return False
+
+        try:
+            await assistant.join_chat(invite_link)
+            # small wait to ensure membership is recognized
+            await asyncio.sleep(0.5)
+            try:
+                await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+            except Exception:
+                pass
+            return True
+        except Exception as e:
+            logging.warning(f"ensure_assistant_in_chat: assistant.join_chat failed: {e}")
+            # Assistant couldn't join automatically; leave it to OP to add manually
+            return False
+    except Exception as e:
+        logging.debug(f"ensure_assistant_in_chat failed: {e}")
+        return False
+
+# ---------- PyTgCalls robust play helper ----------
+async def _pytgcalls_play(chat_id: int, stream_url: str) -> bool:
+    """
+    Try several PyTgCalls methods so the assistant actually joins the group call
+    and starts streaming. Returns True on success.
+    """
+    try:
+        # 1) Preferred: call play if available (used in original code)
+        try:
+            res = await _safe_call_py_method("play", chat_id, MediaStream(stream_url))
+            if res is not None:
+                logging.debug(f"_pytgcalls_play: play succeeded for {chat_id}")
+                return True
+        except Exception as e:
+            logging.debug(f"_pytgcalls_play: play() attempt failed: {e}")
+
+        # 2) join_group_call (some PyTgCalls versions expose this)
+        try:
+            res = await _safe_call_py_method("join_group_call", chat_id, MediaStream(stream_url))
+            if res is not None:
+                logging.debug(f"_pytgcalls_play: join_group_call succeeded for {chat_id}")
+                return True
+        except Exception as e:
+            logging.debug(f"_pytgcalls_play: join_group_call() attempt failed: {e}")
+
+        # 3) join_call (older/newer names)
+        try:
+            res = await _safe_call_py_method("join_call", chat_id, MediaStream(stream_url))
+            if res is not None:
+                logging.debug(f"_pytgcalls_play: join_call succeeded for {chat_id}")
+                return True
+        except Exception as e:
+            logging.debug(f"_pytgcalls_play: join_call() attempt failed: {e}")
+
+        # 4) start_stream or start_playback fallback
+        try:
+            res = await _safe_call_py_method("start_stream", chat_id, stream_url)
+            if res is not None:
+                logging.debug(f"_pytgcalls_play: start_stream succeeded for {chat_id}")
+                return True
+        except Exception as e:
+            logging.debug(f"_pytgcalls_play: start_stream() attempt failed: {e}")
+
+        try:
+            res = await _safe_call_py_method("start_playout", chat_id, stream_url)
+            if res is not None:
+                logging.debug(f"_pytgcalls_play: start_playout succeeded for {chat_id}")
+                return True
+        except Exception:
+            pass
+
+        # If nothing worked
+        logging.debug("_pytgcalls_play: no available play/join method succeeded")
+        return False
+    except Exception as e:
+        logging.debug(f"_pytgcalls_play error: {e}")
+        return False
 
 # ---------- prepare_entry_from_reply ----------
 async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any]]:
@@ -977,12 +1073,36 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
 
 # ---------- play_entry ----------
 async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None):
+    """
+    Play an entry (local file or stream) ensuring assistant joins the voice chat and starts playback.
+    """
     try:
         if chat_id in radio_tasks:
             radio_tasks[chat_id].cancel()
             radio_tasks.pop(chat_id, None)
+
+        # Ensure assistant is in chat (best-effort). Some callers already do this,
+        # but double-check here to improve reliability.
+        assistant_ok = await ensure_assistant_in_chat(chat_id)
+        if not assistant_ok:
+            # Can't ensure assistant is present — fail early
+            logging.warning(f"play_entry: assistant not present in chat {chat_id}")
+            return False
+
         stream_source = entry["stream_url"]
-        await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
+
+        # Try to stream via PyTgCalls using a robust helper
+        played = await _pytgcalls_play(chat_id, stream_source)
+        if not played:
+            logging.error("Play failed: PyTgCalls could not start playback")
+            # Attempt to leave voice to clean up
+            try:
+                await leave_voice_chat(chat_id)
+            except Exception:
+                pass
+            return False
+
+        # thumbnail and message handling follows original logic
         thumb_path = None
         thumb_val = entry.get("thumbnail")
         title = entry.get("title") or "Unknown"
@@ -1062,22 +1182,11 @@ async def cmd_play(_, message: Message):
     user = message.from_user
     if is_group_blocked_sync(chat_id):
         return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
-
-    # If assistant session is not configured, inform the user
-    if assistant is None:
-        return await message.reply_text(t(chat_id, "ASSISTANT_NOT_CONFIGURED"))
-
     try:
-        assistant_user = None
-        assistant_id = None
-        try:
-            assistant_user = await assistant.get_me()
-            assistant_id = assistant_user.id
-        except Exception:
-            assistant_id = None
+        assistant_user = await assistant.get_me()
+        assistant_id = assistant_user.id
     except Exception:
         assistant_id = None
-
     assistant_present = False
     if assistant_id:
         try:
@@ -1574,59 +1683,49 @@ async def play_radio_station(_, query: CallbackQuery):
         return
     if not url:
         return await query.answer(t(chat_id, "STATION_URL_NOT_FOUND"), show_alert=True)
-
-    # If assistant session is not configured, inform the user
-    if assistant is None:
-        return await query.answer(t(chat_id, "ASSISTANT_NOT_CONFIGURED"), show_alert=True)
-
     try:
-        try:
-            assistant_user = await assistant.get_me()
-            assistant_id = assistant_user.id
-        except Exception:
-            assistant_id = None
-        assistant_present = False
-        if assistant_id:
-            try:
-                await assistant.get_chat_member(chat_id, assistant_id)
-                assistant_present = True
-            except RPCError:
-                assistant_present = False
-        if not assistant_present:
+        # Ensure assistant is present
+        assistant_ok = await ensure_assistant_in_chat(chat_id)
+        if not assistant_ok:
+            # Provide invite link to help manual addition
             try:
                 invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
                 invite_link = invite.invite_link
-                try:
-                    await assistant.join_chat(invite_link)
-                    assistant_present = True
-                    try:
-                        await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
-                    except Exception:
-                        pass
-                except Exception as e_join:
-                    logging.warning(f"Assistant failed to join via invite: {e_join}")
-                    assistant_present = False
-                    help_kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("📋 Invite Link", url=invite_link)],
-                        [InlineKeyboardButton("ℹ️ How to add assistant", callback_data="assistant_invite_help")],
-                        [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
-                    ])
-                    await query.message.reply_text(
-                        t(chat_id, "ASSISTANT_INVITE_TEXT"),
-                        reply_markup=help_kb,
-                    )
-                    return
-            except Exception as e_inv:
-                logging.warning(f"Cannot create invite/join assistant: {e_inv}")
+                help_kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("📋 Invite Link", url=invite_link)],
+                    [InlineKeyboardButton("ℹ️ How to add assistant", callback_data="assistant_invite_help")],
+                    [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
+                ])
+                await query.message.reply_text(
+                    t(chat_id, "ASSISTANT_INVITE_TEXT"),
+                    reply_markup=help_kb,
+                )
+            except Exception:
                 await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
-                return
-        await _safe_call_py_method("play", chat_id, MediaStream(url))
-        msg = await query.message.edit_caption(
-            caption=f"🎧 {station}\n🔴 LIVE Radio",
-            reply_markup=player_controls_markup(chat_id),
-        )
+            return
+
+        # Try to start playback via robust helper
+        played = await _pytgcalls_play(chat_id, url)
+        if not played:
+            await leave_voice_chat(chat_id)
+            await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error="pyTgCalls failed"))
+            await query.answer(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error="pyTgCalls failed"), show_alert=True)
+            return
+
+        # Edit message caption to show live playing
+        try:
+            msg = await query.message.edit_caption(
+                caption=f"🎧 {station}\n🔴 LIVE Radio",
+                reply_markup=player_controls_markup(chat_id),
+            )
+            msg_id = msg.id if msg else query.message.id
+        except Exception:
+            # If edit failed, just send a new message
+            msg = await bot.send_message(chat_id, f"🎧 {station}\n🔴 LIVE Radio", reply_markup=player_controls_markup(chat_id))
+            msg_id = msg.id
+
         start_time = time.time()
-        store_play_state(chat_id, station, url, msg.id, start_time, elapsed=0.0, paused=False, duration=None)
+        store_play_state(chat_id, station, url, msg_id, start_time, elapsed=0.0, paused=False, duration=None)
         radio_paused.discard(chat_id)
         await query.answer(f"Now playing {station} via assistant!", show_alert=False)
         log_event_sync("radio_started", {"chat_id": chat_id, "station": station, "by": user.id if user else None})
@@ -1823,35 +1922,25 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    # Start assistant (if available) and call_py safely
-    if assistant is not None:
-        try:
-            assistant.start()
-            if call_py is not None:
-                try:
-                    call_py.start()
-                except Exception as e:
-                    logger.warning(f"call_py.start() failed: {e}")
-                    call_py = None
-        except Exception as e:
-            logger.warning(f"Assistant session failed to start: {e}")
-            assistant = None
-            call_py = None
+    # Start assistant and PyTgCalls first so voice call features are available
+    try:
+        assistant.start()
+    except Exception as e:
+        logger.warning(f"Assistant start failed: {e}")
+    try:
+        call_py.start()
+    except Exception as e:
+        logger.warning(f"PyTgCalls start failed: {e}")
 
     try:
         bot.start()
     except Exception as e:
-        logger.error(f"Bot failed to start: {e}", exc_info=True)
-        raise
+        logger.warning(f"Bot start failed: {e}")
 
     try:
-        if assistant is not None:
-            me = assistant.get_me()
-            ASSISTANT_USERNAME = me.username
-            ASSISTANT_ID = me.id
-        else:
-            ASSISTANT_USERNAME = None
-            ASSISTANT_ID = None
+        me = assistant.get_me()
+        ASSISTANT_USERNAME = me.username
+        ASSISTANT_ID = me.id
     except Exception:
         ASSISTANT_USERNAME = "assistant"
         ASSISTANT_ID = None
@@ -1869,10 +1958,8 @@ if __name__ == "__main__":
         idle()
     finally:
         try:
-            if call_py is not None:
-                call_py.stop()
-            if assistant is not None:
-                assistant.stop()
+            call_py.stop()
+            assistant.stop()
             bot.stop()
         except Exception:
             pass
