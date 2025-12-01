@@ -1,0 +1,23 @@
+{
+  "name": "dlk-bot",
+  "description": "DLK Telegram radio bot",
+  "repository": "",
+  "stack": "heroku-20",
+  "buildpacks": [
+    { "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg.git" },
+    { "url": "heroku/python" }
+  ],
+  "env": {
+    "API_ID": { "description": "Telegram API ID", "required": true },
+    "API_HASH": { "description": "Telegram API HASH", "required": true },
+    "BOT_TOKEN": { "description": "Bot token", "required": true },
+    "ASSISTANT_SESSION": { "description": "Assistant (user) session string", "required": false },
+    "OWNER_ID": { "description": "Owner user id", "required": true },
+    "MONGO_URI": { "description": "MongoDB connection string", "required": false },
+    "MONGO_DBNAME": { "description": "Mongo DB name", "value": "dlk_radio" },
+    "LOG_CHANNEL_ID": { "description": "Optional log target", "required": false }
+  },
+  "formation": {
+    "worker": { "quantity": 1, "size": "standard-1X" }
+  }
+}
