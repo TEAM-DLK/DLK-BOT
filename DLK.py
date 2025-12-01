@@ -66,7 +66,14 @@ _PyroClient.handle_updates = _safe_handle_updates
 API_ID = int(os.environ.get("API_ID", "") or "")
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION", "")
+
+# Read assistant session and normalise empty/whitespace -> None so Pyrogram does not try to use an empty string
+ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION")
+if ASSISTANT_SESSION:
+    ASSISTANT_SESSION = ASSISTANT_SESSION.strip() or None
+else:
+    ASSISTANT_SESSION = None
+
 OWNER_ID = int(os.getenv("OWNER_ID", "") or "")
 
 MONGO_URI = os.environ.get("MONGO_URI")
@@ -132,8 +139,18 @@ BOT_USERNAME = None
 ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
 
+# Create bot client (bot uses bot token)
 bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
-assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
+
+# Create assistant (user) client - include API credentials and only use session_string if set (None otherwise)
+assistant = Client(
+    "assistant_account",
+    session_string=ASSISTANT_SESSION,
+    api_id=API_ID,
+    api_hash=API_HASH,
+)
+
+# PyTgCalls uses the assistant client; we will only start call_py if assistant is successfully started
 call_py = PyTgCalls(assistant)
 
 db_client = None
@@ -267,7 +284,7 @@ TRANSLATIONS = {
         "YTDLP_FAIL": "❌ Audio stream එක ගන්න බැරි වුනා. yt-dlp install කරලා තියෙනවද කියලා check කරන්න.",
         "FAILED_PLAY_REQUEST": "❌ ගීතය play කිරීම fail උනා.",
         "FAILED_PLAY_NEXT": "ඉලගට තිබෙන ගීතය play කරන්න බැරි උනා: {title}",
-        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කරන්න බැරි උනා: {title}",
+        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කර��න බැරි උනා: {title}",
         "NOTHING_TO_RESUME": "Resume කරන්න දෙයක් නෑ.",
         "RADIO_RESUMED": "▶️ Radio එක නැවතිලා තිබුණේ අරන් යනවා.",
         "FAILED_RESUME": "රෙඩියෝ තවකලිකව නැවැත්විම බැරි උනා.",
@@ -292,7 +309,7 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat permission දීලා බලන්න.",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat manage + speak permission දෙන්න.",
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
         "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
         "ASSISTANT_INVITE_HELP_TEXT": (
@@ -1789,14 +1806,39 @@ if __name__ == "__main__":
     except Exception as e:
         logger.warning(f"Database initialization failed: {e}")
 
-    assistant.start()
-    call_py.start()
+    # Start assistant only if a valid session string is provided; otherwise voice features are disabled.
+    assistant_started = False
+    if ASSISTANT_SESSION:
+        try:
+            assistant.start()
+            assistant_started = True
+            logger.info("Assistant (user) client started.")
+        except Exception as e:
+            logger.warning(f"Assistant start failed: {e}")
+            assistant_started = False
+    else:
+        logger.warning("ASSISTANT_SESSION is not set - assistant (user) client will not be started. Voice features disabled.")
+
+    # Start PyTgCalls only if assistant started
+    if assistant_started:
+        try:
+            call_py.start()
+            logger.info("PyTgCalls started.")
+        except Exception as e:
+            logger.warning(f"PyTgCalls start failed: {e}")
+            # If call_py fails, we continue but voice features will not work reliably.
+
+    # Start bot (bot token client)
     bot.start()
 
     try:
-        me = assistant.get_me()
-        ASSISTANT_USERNAME = me.username
-        ASSISTANT_ID = me.id
+        if assistant_started:
+            me = assistant.get_me()
+            ASSISTANT_USERNAME = me.username
+            ASSISTANT_ID = me.id
+        else:
+            ASSISTANT_USERNAME = "assistant"
+            ASSISTANT_ID = None
     except Exception:
         ASSISTANT_USERNAME = "assistant"
         ASSISTANT_ID = None
@@ -1814,8 +1856,16 @@ if __name__ == "__main__":
         idle()
     finally:
         try:
-            call_py.stop()
-            assistant.stop()
+            # Stop call_py and assistant only if they were started
+            if assistant_started:
+                try:
+                    call_py.stop()
+                except Exception:
+                    pass
+                try:
+                    assistant.stop()
+                except Exception:
+                    pass
             bot.stop()
         except Exception:
             pass
