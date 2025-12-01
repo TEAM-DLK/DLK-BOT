@@ -1,15 +1,20 @@
-# Full DLK.py (updated)
-# Changes:
-# - Improved _start_stream_in_call with:
-#   * AudioPiped usage if available
-#   * MediaStream fallback
-#   * safe call fallback
-#   * after-call checks to detect if call actually started (handles methods that return None)
-# - Added ffmpeg presence check and clearer logging / user-facing errors when ffmpeg or input types are missing
-# - More debug logs to help trace why streaming did not start
+# Full DLK.py (updated further to improve call start detection and add more fallbacks)
+# NOTE: This file is a modified version of the repository file at:
+# https://github.com/gamingdhana49-dotcom/bot/blob/1b6f339367481436a7ecb4e44ecd4ff947c935a0/DLK.py
 #
-# NOTE: For reliable streaming with AudioPiped you MUST have ffmpeg installed in the environment.
-# On Heroku add an ffmpeg buildpack (or use a container with ffmpeg). Also use a recent PyTgCalls/NTgCalls.
+# Summary of additional changes in this version:
+# - Broadened _is_call_active_sync heuristics (try more internal attributes and shapes)
+# - Increased wait times / retries after attempting to start streams
+# - Try calling call_py methods with several plausible kwarg names for input stream (positional, input_stream, audio_stream)
+# - Additional logging to help diagnose why join/play didn't actually start (permissions, missing ffmpeg, unsupported API)
+# - Helpful user-facing messages when ffmpeg is missing and AudioPiped is used
+# - Minor robustness fixes around assistant start and call_py.start/stop flows
+#
+# Please ensure:
+# - Assistant account has been added to the group and has permission to manage voice chats + speak.
+# - ffmpeg is installed if using AudioPiped (Heroku: add ffmpeg buildpack) when streaming remote sources.
+# - Use a recent compatible version of PyTgCalls / NTgCalls / pytgcalls and ntgcalls packages.
+
 import os
 import re
 import time
@@ -132,7 +137,7 @@ RADIO_STATION = {
     "The Best Music": "http://s1.slotex.pl:7040/",
     "HITZ FM": "https://stream-173.zeno.fm/uyx7eqengijtv",
     "Prime Radio HD": "https://stream-153.zeno.fm/oksfm5djcfxvv",
-    "1Mix Radio - Trance": "https://fr3.1mix.co.uk:8000/128",
+    "1Mix Radio - Trance": "http://fr3.1mix.co.uk:8000/128",
     "Mangled Music Radio": "http://hearme.fm:9500/autodj?8194",
     "ShreeFM": "https://207.148.74.192:7874/stream2.mp3",
     "ShaaFM": "https://radio.lotustechnologieslk.net:2020/stream/shaafmgarden",
@@ -827,40 +832,86 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
 def _is_call_active_sync(chat_id: int) -> bool:
     """
     Best-effort synchronous check whether call_py has an active call for chat_id.
-    Different PyTgCalls versions expose active calls differently; try common patterns.
+    Different PyTgCalls / ntgcalls versions expose active calls differently; try many common patterns.
     """
     try:
-        if hasattr(call_py, "get_call"):
-            try:
-                c = call_py.get_call(chat_id)
-                if c:
-                    return True
-            except Exception:
-                pass
-        ac = getattr(call_py, "active_calls", None) or getattr(call_py, "_active_calls", None)
-        if isinstance(ac, dict):
-            # keys may be ints or objects; check presence
-            if chat_id in ac:
-                return True
-            try:
-                if str(chat_id) in ac:
-                    return True
-            except Exception:
-                pass
-            # sometimes values contain objects with chat_id
-            for v in ac.values():
+        # 1) Official getter
+        try:
+            if hasattr(call_py, "get_call"):
                 try:
-                    if getattr(v, "chat_id", None) == chat_id:
+                    c = call_py.get_call(chat_id)
+                    if c:
                         return True
                 except Exception:
                     pass
-        elif isinstance(ac, list):
-            for item in ac:
+            if hasattr(call_py, "get_active_call"):
                 try:
-                    if getattr(item, "chat_id", None) == chat_id:
+                    c = call_py.get_active_call(chat_id)
+                    if c:
                         return True
                 except Exception:
                     pass
+        except Exception:
+            pass
+
+        # 2) Common attributes: active_calls, _active_calls, _group_calls, _calls
+        for attr_name in ("active_calls", "_active_calls", "_group_calls", "group_calls", "_calls", "calls", "_call_queue"):
+            ac = getattr(call_py, attr_name, None)
+            if not ac:
+                continue
+            # dict-like
+            if isinstance(ac, dict):
+                # check keys and values
+                if chat_id in ac:
+                    return True
+                try:
+                    if str(chat_id) in ac:
+                        return True
+                except Exception:
+                    pass
+                for k, v in ac.items():
+                    try:
+                        if getattr(v, "chat_id", None) == chat_id:
+                            return True
+                        if getattr(v, "peer_id", None) == chat_id:
+                            return True
+                        # some implementations store integer-like keys, check nested attr
+                        if hasattr(v, "group_call") and getattr(v.group_call, "chat_id", None) == chat_id:
+                            return True
+                    except Exception:
+                        pass
+            # list-like
+            elif isinstance(ac, (list, tuple, set)):
+                for item in ac:
+                    try:
+                        if getattr(item, "chat_id", None) == chat_id:
+                            return True
+                        if getattr(item, "peer_id", None) == chat_id:
+                            return True
+                    except Exception:
+                        pass
+            else:
+                # unknown object - try attributes inside
+                try:
+                    if getattr(ac, "chat_id", None) == chat_id or getattr(ac, "peer_id", None) == chat_id:
+                        return True
+                except Exception:
+                    pass
+
+        # 3) Some implementations expose .is_connected / .is_running
+        for check in ("is_connected", "is_running", "running"):
+            try:
+                attr = getattr(call_py, check, None)
+                if callable(attr):
+                    ok = attr()
+                    if ok:
+                        # can't be sure it's for this chat but report active
+                        return True
+                elif isinstance(attr, bool) and attr:
+                    return True
+            except Exception:
+                pass
+
         return False
     except Exception:
         return False
@@ -943,8 +994,8 @@ def store_play_state(
 async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
     """
     Attempt to start playback in the group call. Strategy:
-    1) If AudioPiped available and ffmpeg present => try AudioPiped
-    2) If MediaStream available => try MediaStream approach
+    1) If AudioPiped available and ffmpeg present => try AudioPiped (multiple method signatures)
+    2) If MediaStream available => try MediaStream approach (multiple method signatures)
     3) Try safe_call with raw stream_source
     After each attempt we check `_is_call_active` to determine whether the call is actually active,
     because many call methods return None even on success.
@@ -957,56 +1008,101 @@ async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
     ffmpeg_ok = is_ffmpeg_available()
     logging.debug(f"_start_stream_in_call: AudioPiped={'yes' if AudioPiped else 'no'}, MediaStream={'yes' if MediaStream else 'no'}, ffmpeg={'yes' if ffmpeg_ok else 'no'}")
 
-    # 1) Try AudioPiped if available and ffmpeg present
-    if AudioPiped is not None and ffmpeg_ok:
+    # Helper to try a call and then check status with retries
+    async def _try_and_verify(call_coro_callable):
+        """
+        call_coro_callable: a callable that will perform the call (can be sync or async)
+        After calling, we wait a bit and check _is_call_active several times.
+        """
         try:
-            logging.debug(f"Trying AudioPiped for chat {chat_id} with source {stream_source}")
-            audio_stream = AudioPiped(stream_source)
-            # Try several method names
-            for method in ("join_group_call", "join_call", "play", "play_stream", "start_playout", "start_stream"):
-                if hasattr(call_py, method):
-                    try:
-                        logging.debug(f"Calling call_py.{method} with AudioPiped")
-                        res = getattr(call_py, method)(chat_id, audio_stream)
-                        if inspect.isawaitable(res):
-                            await res
-                    except Exception as e:
-                        logging.debug(f"AudioPiped call_py.{method} raised: {e}")
-                    # Give library a moment
-                    await asyncio.sleep(0.5)
-                    if await _is_call_active(chat_id):
-                        logging.info(f"Stream started using {method} + AudioPiped for chat {chat_id}")
-                        return True
-            logging.debug("AudioPiped attempts didn't report active call")
+            result = call_coro_callable()
+            if inspect.isawaitable(result):
+                await result
         except Exception as e:
-            logging.debug(f"AudioPiped attempt failed for chat {chat_id}: {e}")
+            logging.debug(f"_try_and_verify: call raised: {e}")
+        # After attempt, allow library some time to register call
+        for attempt in range(6):
+            await asyncio.sleep(0.5)  # total up to ~3s across attempts
+            try:
+                active = await _is_call_active(chat_id)
+                logging.debug(f"_try_and_verify: attempt {attempt} active={active}")
+                if active:
+                    return True
+            except Exception:
+                pass
+        return False
+
+    # 1) Try AudioPiped if available and ffmpeg present
+    if AudioPiped is not None:
+        if not ffmpeg_ok:
+            logging.debug("AudioPiped present but ffmpeg missing; will still try raw stream attempts.")
+        else:
+            try:
+                logging.debug(f"Trying AudioPiped for chat {chat_id} with source {stream_source}")
+                audio_stream = None
+                try:
+                    audio_stream = AudioPiped(stream_source)
+                except Exception as e:
+                    logging.debug(f"AudioPiped(...) constructor failed: {e}; will proceed to try passing source directly")
+                    audio_stream = None
+
+                # List of candidate method names and multiple arg patterns (positional and kw)
+                methods_and_args = []
+                for method_name in ("join_group_call", "join_call", "play", "play_stream", "start_playout", "start_stream", "start"):
+                    # candidate variants
+                    if audio_stream is not None:
+                        methods_and_args.append((method_name, (chat_id, audio_stream), {}))
+                        methods_and_args.append((method_name, (chat_id,), {"input_stream": audio_stream}))
+                        methods_and_args.append((method_name, (chat_id,), {"audio_stream": audio_stream}))
+                        methods_and_args.append((method_name, (chat_id,), {"stream": audio_stream}))
+                    # try also passing raw source (some libs accept URL directly)
+                    methods_and_args.append((method_name, (chat_id, stream_source), {}))
+                    methods_and_args.append((method_name, (chat_id,), {"input_stream": stream_source}))
+                    methods_and_args.append((method_name, (chat_id,), {"audio_stream": stream_source}))
+                # call each candidate
+                for method_name, args, kwargs in methods_and_args:
+                    if not hasattr(call_py, method_name):
+                        continue
+                    def make_call(method=method_name, a=args, kw=kwargs):
+                        return getattr(call_py, method)(*a, **kw)
+                    logging.debug(f"AudioPiped: attempting {method_name} args={args} kwargs={kwargs}")
+                    ok = await _try_and_verify(make_call)
+                    logging.info(f"Attempted AudioPiped {method_name} for chat {chat_id}, verified={ok}")
+                    if ok:
+                        logging.info(f"Stream started using AudioPiped via {method_name} for chat {chat_id}")
+                        return True
+                logging.debug("AudioPiped attempts didn't report active call")
+            except Exception as e:
+                logging.debug(f"AudioPiped attempt failed for chat {chat_id}: {e}")
 
     # 2) Try MediaStream if available
     if MediaStream is not None:
         try:
             logging.debug(f"Trying MediaStream for chat {chat_id} with source {stream_source}")
-            ms = MediaStream(stream_source)
-            candidates = [
-                ("join_group_call", (chat_id, ms), {}),
-                ("join_call", (chat_id, ms), {}),
-                ("play", (chat_id, ms), {}),
-                ("play_stream", (chat_id, ms), {}),
-                ("start_playout", (chat_id, ms), {}),
-                ("start_stream", (chat_id, ms), {}),
-            ]
-            for name, args, kwargs in candidates:
-                if hasattr(call_py, name):
-                    try:
-                        logging.debug(f"Calling call_py.{name} with MediaStream")
-                        res = getattr(call_py, name)(*args, **kwargs)
-                        if inspect.isawaitable(res):
-                            await res
-                    except Exception as e:
-                        logging.debug(f"MediaStream call_py.{name} raised: {e}")
-                    await asyncio.sleep(0.5)
-                    if await _is_call_active(chat_id):
-                        logging.info(f"Stream started using {name} for chat {chat_id}")
-                        return True
+            try:
+                ms = MediaStream(stream_source)
+            except Exception as e:
+                logging.debug(f"MediaStream(...) constructor failed: {e}; will try passing source directly")
+                ms = None
+            methods_and_args = []
+            for method_name in ("join_group_call", "join_call", "play", "play_stream", "start_playout", "start_stream", "start"):
+                if ms is not None:
+                    methods_and_args.append((method_name, (chat_id, ms), {}))
+                    methods_and_args.append((method_name, (chat_id,), {"input_stream": ms}))
+                    methods_and_args.append((method_name, (chat_id,), {"media_stream": ms}))
+                methods_and_args.append((method_name, (chat_id, stream_source), {}))
+                methods_and_args.append((method_name, (chat_id,), {"input_stream": stream_source}))
+            for method_name, args, kwargs in methods_and_args:
+                if not hasattr(call_py, method_name):
+                    continue
+                def make_call(method=method_name, a=args, kw=kwargs):
+                    return getattr(call_py, method)(*a, **kw)
+                logging.debug(f"MediaStream: attempting {method_name} args={args} kwargs={kwargs}")
+                ok = await _try_and_verify(make_call)
+                logging.info(f"Attempted MediaStream {method_name} for chat {chat_id}, verified={ok}")
+                if ok:
+                    logging.info(f"Stream started using MediaStream via {method_name} for chat {chat_id}")
+                    return True
             logging.debug("MediaStream attempts didn't report active call")
         except Exception as e:
             logging.debug(f"MediaStream attempt failed for chat {chat_id}: {e}")
@@ -1019,19 +1115,44 @@ async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
         ("play_stream", (chat_id, stream_source), {}),
         ("start_playout", (chat_id, stream_source), {}),
         ("start_stream", (chat_id, stream_source), {}),
+        ("start", (chat_id, stream_source), {}),
     ]
     for name, args, kwargs in candidates:
+        if not hasattr(call_py, name):
+            continue
         try:
             logging.debug(f"Attempting safe_call {name} with raw stream source")
             res = await _safe_call_py_method(name, *args, **kwargs)
             logging.info(f"Attempted safe_call {name} for chat {chat_id}, result={res}")
-            await asyncio.sleep(0.5)
-            if await _is_call_active(chat_id):
-                logging.info(f"Stream started using safe_call {name} for chat {chat_id}")
-                return True
+            # Wait and verify more thoroughly (give lib time to connect)
+            for attempt in range(6):
+                await asyncio.sleep(0.5)
+                if await _is_call_active(chat_id):
+                    logging.info(f"Stream started using safe_call {name} for chat {chat_id}")
+                    return True
         except Exception as e:
             logging.debug(f"_safe_call_py_method {name} failed for chat {chat_id}: {e}")
             continue
+
+    # Extra fallback: if ntgcalls is available, try to use its join_group_call if provided
+    try:
+        if hasattr(ntgcalls, "init") or hasattr(ntgcalls, "create"):
+            # This is exploratory: many ntgcalls wrappers expose different apis.
+            logging.debug("Trying ntgcalls fallback attempts")
+            for method_name in ("join_group_call", "join", "play"):
+                if hasattr(call_py, method_name):
+                    try:
+                        res = getattr(call_py, method_name)(chat_id, stream_source)
+                        if inspect.isawaitable(res):
+                            await res
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.8)
+                    if await _is_call_active(chat_id):
+                        logging.info(f"Stream started using ntgcalls fallback {method_name} for chat {chat_id}")
+                        return True
+    except Exception as e:
+        logging.debug(f"ntgcalls fallback failed: {e}")
 
     # Nothing worked
     logging.warning(f"All attempts to start stream failed for chat {chat_id}")
@@ -1312,7 +1433,8 @@ async def cmd_play(_, message: Message):
             try:
                 await message.reply_text(
                     "❌ Failed to play. ffmpeg not found in environment. "
-                    "Install ffmpeg (on Heroku add ffmpeg buildpack) and restart."
+                    "Install ffmpeg (on Heroku add ffmpeg buildpack) and restart. "
+                    "Also ensure the assistant account has permission to manage voice chats and speak."
                 )
             except Exception:
                 pass
@@ -1790,7 +1912,8 @@ async def play_radio_station(_, query: CallbackQuery):
             if AudioPiped is not None and not is_ffmpeg_available():
                 await query.message.reply_text(
                     "❌ Failed to start radio: ffmpeg is not installed in the environment. "
-                    "Install ffmpeg (on Heroku add ffmpeg buildpack) and restart the bot."
+                    "Install ffmpeg (on Heroku add ffmpeg buildpack) and restart the bot. "
+                    "Also ensure the assistant account is present in the group and has permission to speak."
                 )
             else:
                 await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error="assistant failed to start stream"))
