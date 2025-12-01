@@ -13,5 +13,5 @@ yt-dlp==2025.11.12
 youtube-search-python==1.6.6
 # add any other libs you need, e.g.
 py-tgcalls==2.2.8
-ntgcalls<1.3.0
+ntgcalls<3.0.0
 ffmpeg-python==0.1.4
