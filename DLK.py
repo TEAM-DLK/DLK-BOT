@@ -1,4 +1,3 @@
-```python
 # DLK.py - Updated (2025-12-01)
 # Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/1b6f339367481436a7ecb4e44ecd4ff947c935a0/DLK.py
 #
@@ -2201,4 +2200,3 @@ if __name__ == "__main__":
             bot.stop()
         except Exception:
             pass
-```
