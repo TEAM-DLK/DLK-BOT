@@ -256,7 +256,7 @@ TRANSLATIONS = {
         "NOTHING_TO_RESUME_BTN": "Nothing to resume.",
     },
     "si": {
-        "GROUP_BLOCKED": "❌ මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
+        "GROUP_BLOCKED": "❌ මේ group එක block කරලා තියෙන්නේ.",
         "ONLY_ADMINS": "මෙම විධානය භාවිතා කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
         "ONLY_ADMINS_SKIP": "වෙනස් කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
         "ONLY_ADMINS_STOP": "Playback නවත්තන්න පුළුවන් ඇඩ්මින්ලට විතරයි!",
@@ -270,7 +270,7 @@ TRANSLATIONS = {
         "QUEUE_EMPTY": "(queue) හිස්.",
         "QUEUE_HEADER": "ඉදිරියේ තියෙන:\n",
         "SKIPPED_NO_QUEUE": "⛔ ඉවත් කලා. Queue එකේ තව ගීත නැහැ.",
-        "SKIPPED_NO_QUEUE_RADIO": "⛔ ඉවත් කලා. Queue එකහිස්.",
+        "SKIPPED_NO_QUEUE_RADIO": "⛔ ඉවත් කලා. Queue එක හිස්.",
         "BOT_STOPPED": "DLK බොට් නැවතුනා. clean කරා.",
         "RADIO_ENDED": "✅ රෙඩියෝව නවත්වලා assistant voice chat එකෙන් එළියට ගියා.",
         "FAILED_END_RADIO": "රෙඩියෝව නවත්තන එක කරන්න බැරි උනා.",
@@ -279,78 +279,60 @@ TRANSLATIONS = {
         "NOW_PLAYING": "▶️ දැන් play වෙන්නේ: {title}",
         "NOW_PLAYING_QUEUE": "⏭️ දැන් play වෙන්නේ: {title}",
         "PREPARING_AUDIO_REPLY": "Reply audio එක සකස් කරමින්...",
-        "PLAY_USAGE": "භාවිතා කරන්නේ මෙහෙමයි: /play <YouTube url / search term> හෝ audio/voice එකකට reply කරලා /play දාන්න.",
-        "SEARCHING_STREAM": "🔎 Stream එක සෙට් කරනවා...",
-        "YTDLP_FAIL": "❌ Audio stream එක ගන්න බැරි වුනා. yt-dlp install කරලා තියෙනවද කියලා check කරන්න.",
+        "PLAY_USAGE": "භාවිතය: /play <YouTube url / search term> හෝ audio/voice එකට reply කරලා /play.",
+        "SEARCHING_STREAM": "🔎 Stream සෙට් කරනවා...",
+        "YTDLP_FAIL": "❌ Audio stream ගන්න බැරි වුනා. yt-dlp install කරලා තියෙනවද බලන්න.",
         "FAILED_PLAY_REQUEST": "❌ ගීතය play කිරීම fail උනා.",
         "FAILED_PLAY_NEXT": "ඉලගට තිබෙන ගීතය play කරන්න බැරි උනා: {title}",
-        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කර��න බැරි උනා: {title}",
+        "FAILED_PLAY_NEXT_RADIO": "ඉලගට තිබෙන රෙඩියෝ එක play කරන්න බැරි උනා: {title}",
         "NOTHING_TO_RESUME": "Resume කරන්න දෙයක් නෑ.",
-        "RADIO_RESUMED": "▶️ Radio එක නැවතිලා තිබුණේ අරන් යනවා.",
-        "FAILED_RESUME": "රෙඩියෝ තවකලිකව නැවැත්විම බැරි උනා.",
-        "GROUP_BLOCKED_OK": "✅ මේ group එක DLK BOT ගෙන් block කරා.",
-        "GROUP_UNBLOCKED_OK": "✅ මේ group එක unblock කරා.",
-        "FAILED_BLOCK_GROUP": "Group එක block කරනකොට error එකක් වුනා.",
-        "FAILED_UNBLOCK_GROUP": "Group එක unblock කරනකොට error එකක් වුනා.",
-        "DB_NOT_CONFIGURED": "Database configure කරලා නෑ. Block list එක තියෙන්නේ නෑ.",
+        "RADIO_RESUMED": "▶️ Radio නැවතිලා තිබුණේ අරන් යනවා.",
+        "FAILED_RESUME": "රෙඩියෝ resume කරන්න බැරි උනා.",
+        "GROUP_BLOCKED_OK": "✅ මේ group එක block කරලා.",
+        "GROUP_UNBLOCKED_OK": "✅ මේ group එක unblock කරලා.",
+        "FAILED_BLOCK_GROUP": "Group block කිරීම failed.",
+        "FAILED_UNBLOCK_GROUP": "Group unblock failed.",
+        "DB_NOT_CONFIGURED": "Database configure කරලා නෑ.",
         "BLOCK_LIST_EMPTY": "Block කරපු group නෑ.",
         "BLOCK_LIST_HEADER": "Block කරපු groups:",
-        "FAILED_FETCH_BLOCKS": "Block list එක ගන්න බැරි උනා.",
-        "MUSIC_SKIP_BTN_NO_QUEUE": "⛔ Skip කලා. Queue එක හිස්.",
-        "MUSIC_SKIP_BTN_ALERT": "Skip කලා. Queue එකේ කිසි දෙයක් නැහැ.",
-        "MUSIC_SKIP_BTN_FAIL": "Next track එකට skip කරන්න බැරි උනා.",
-        "RADIO_NOTHING_PLAYING": "දැන් play වෙන්න කිසිම දෙයක් නෑ.",
+        "FAILED_FETCH_BLOCKS": "Block list ගන්න බැරි උනා.",
+        "MUSIC_SKIP_BTN_NO_QUEUE": "⛔ Skip කලා. Queue හිස්.",
+        "MUSIC_SKIP_BTN_ALERT": "Skip කලා. Queue හිස්.",
+        "MUSIC_SKIP_BTN_FAIL": "Next track skip කළා නැහැ.",
+        "RADIO_NOTHING_PLAYING": "දැන් play වෙන කිසිවක් නෑ.",
         "RADIO_PAUSED": "Pause කරලා.",
-        "RADIO_PAUSE_FAIL": "Stream එක pause කරන්න බැරි උනා.",
+        "RADIO_PAUSE_FAIL": "Pause failed.",
         "RADIO_RESUMED_BTN": "Resume කරලා.",
-        "RADIO_RESUME_FAIL_BTN": "Stream එක resume කරන්න බැරි උනා.",
-        "RADIO_STOPPED_BTN": "DLK BOT ව නවත්වලා!",
-        "RADIO_STOP_FAIL_BTN": "Bot නවත්තන එක කරන්න බැරි උනා.",
-        "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
-        "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
-        "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voice chat manage + speak permission දෙන්න.",
-        "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "RADIO_RESUME_FAIL_BTN": "Resume failed.",
+        "RADIO_STOPPED_BTN": "DLK BOT නවත්වලා!",
+        "RADIO_STOP_FAIL_BTN": "Stop failed.",
+        "STATION_URL_NOT_FOUND": "Station URL හමුවුණේ නෑ!",
+        "ASSISTANT_BLOCKED_GROUP": "Group එක block කරලා තියෙනව.",
+        "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. add කරන්න.",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා තියෙනවා — assistant එක add කරන්න.",
+        "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat permissions දෙන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant add කරන්න බැරි උනා. ඔයාම add කරලා නැවත උත්සහ කරන්න.",
         "ASSISTANT_INVITE_HELP_TEXT": (
-            "Assistant account එක add කරන විදිහ:\n\n"
+            "Assistant add කරන විදිහ:\n\n"
             "1. Group info -> Administrators -> Add Administrator\n"
-            "2. Assistant account එක සෙට් කරන්න.\n"
-            "3. Voice chats manage + speak permission දෙන්න.\n\n"
-            "Invite link එකෙන් add කරලා command එක නැවත දන්න."
+            "2. Assistant account add කරන්න.\n"
+            "3. Voice chat manage + speak permission දෙන්න.\n\n"
+            "Invite link use කරලා add කරලා command නැවත දාන්න."
         ),
-        "RADIO_CONNECTING": "🎧 {station} station එකට connect වෙනවා...",
-        "RATE_LIMIT": "⏳ FloodWait! තවත් {seconds} seconds ඉන්න.",
-        "VOICECHAT_NOT_READY": "❌ Voice chat එක active නැති නිසා connect වෙන්න බැ. Voice chat on කරලා permissions check කරලා බලන්න.",
-        "RADIO_PLAY_FAILED_ASSIST": "Radio play කිරීම කරන්න බැරි උනා! Assistant error: {error}",
-        "RADIO_START_FAIL": "❌ Radio start කිරීම කරන්න බැරි උනා! Error: {error}",
-        "START_TEXT": (
-            "👋 DLK BOT ට ඔයාව සාදරෙන් පිළිගන්නවා!\n\n"
-            "Group වලදී භාවිතා කරන විධාන:\n"
-            "- /radio : radio stations menu\n"
-            "- /play <query|URL> හෝ audio එකකට reply කරලා /play\n"
-            "- /pause /resume /stop /skip : admins ලට controls\n\n"
-            "Owner-only: /bl (group block), /unbl (group unblock)\n"
-            "මේ chat එකේ භාෂාව වෙනස් කරන්න /lang දාන්න."
-        ),
-        "HOME_TEXT": "👋 DLK BOT Home\n\nButtons use කරලා navigate වෙන්න. Menu එකෙන් stations, Help එකෙන් විධාන බලන්න.",
-        "HELP_TEXT": (
-            "DLK BOT help:\n"
-            "- /play දාලා YouTube link / search term එක play කරන්න.\n"
-            "- Audio/file එකකට reply කරලා /play දලත් ඒක play වෙයි.\n"
-            "- /radio දාද්දී radio station list එක එයි.\n"
-            "- /rpush දාද්දී station නම හෝ URL එක queue එකට add වෙයි.\n"
-            "- /rskip, /rend, /rresume admins ලට.\n"
-            "- Inline buttons වලින් pause/resume/skip/stop control කරන්න පුළුවන්.\n"
-            "- Owner-only: /bl /unbl group block/unblock.\n"
-            "- /lang දාලා භාෂාව වෙනස් කරන්න පුළුවන්.\n"
-        ),
+        "RADIO_CONNECTING": "🎧 {station} ට connect වෙනවා...",
+        "RATE_LIMIT": "⏳ FloodWait! ඉන්න {seconds} seconds.",
+        "VOICECHAT_NOT_READY": "❌ Voice chat active නැහැ.",
+        "RADIO_PLAY_FAILED_ASSIST": "Radio play failed! Assistant error: {error}",
+        "RADIO_START_FAIL": "❌ Radio start failed! Error: {error}",
+        "START_TEXT": "👋 DLK BOT වෙත සාදරයෙන් පිළිගන්නවා!",
+        "HOME_TEXT": "👋 DLK BOT Home",
+        "HELP_TEXT": "DLK BOT help.",
         "LANG_MENU_TITLE": "🌐 Chat භාෂා සැකසුම්",
-        "CHOOSE_LANG": "🌐 මේ chat එකට භාවිතා කරන භාෂාව තෝරන්න:",
-        "LANG_CURRENT": "දැන් භාවිතා කරන භාෂාව: {lang_name}",
-        "LANG_CHANGED": "✅ භාෂාව {lang_name} ට වෙනස් කරා.",
-        "UNKNOWN_LANG": "මන් තාම ඉගෙන ගෙන නැති භාෂාවක්.",
-        "NOTHING_TO_RESUME_BTN": "Resume කරන්න ගීතයක් නෑ.",
+        "CHOOSE_LANG": "🌐 භාෂාව තෝරන්න:",
+        "LANG_CURRENT": "Current: {lang_name}",
+        "LANG_CHANGED": "✅ භාෂාව වෙනස් වුනා: {lang_name}",
+        "UNKNOWN_LANG": "Unknown language.",
+        "NOTHING_TO_RESUME_BTN": "Resume දෙයක් නෑ.",
     },
 }
 
@@ -815,14 +797,21 @@ async def _force_leave_call(chat_id: int):
     Assistant voice call leave එක මෙතනින් හරියටම handle කරනව.
     """
     try:
-        await call_py.leave_group_call(chat_id)
-        logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
-    except Exception as e:
-        logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
+        # Prefer leave_group_call, fallback to leave_call
+        try:
+            if hasattr(call_py, "leave_group_call"):
+                await call_py.leave_group_call(chat_id)
+                logging.debug(f"_force_leave_call: leave_group_call used for {chat_id}")
+                return
+        except Exception as e:
+            logging.debug(f"_force_leave_call leave_group_call failed {chat_id}: {e}")
         try:
             await _safe_call_py_method("leave_call", chat_id)
+            logging.debug(f"_force_leave_call: leave_call fallback used for {chat_id}")
         except Exception as e2:
             logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
+    except Exception as e:
+        logging.debug(f"_force_leave_call failed totally: {e}")
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
     """
@@ -871,6 +860,56 @@ def store_play_state(
         "ts": time.time(),
     }
     radio_state[chat_id] = state
+
+# New helper: try multiple call_py methods to start streaming/joining voice call
+async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
+    """
+    Attempt to start playback in the group call. Tries several method names
+    used across PyTgCalls/NTgCalls versions for compatibility:
+    - join_group_call
+    - play
+    - play_stream
+    - start_playout
+    - join_call
+    Returns True on success, False otherwise.
+    """
+    if not stream_source:
+        return False
+    ms = MediaStream(stream_source)
+    # candidate method names (in order). adjust or add more names if necessary.
+    candidates = [
+        ("join_group_call", (chat_id, ms), {}),
+        ("join_call", (chat_id, ms), {}),
+        ("play", (chat_id, ms), {}),
+        ("play_stream", (chat_id, ms), {}),
+        ("start_playout", (chat_id, ms), {}),
+        ("start_stream", (chat_id, ms), {}),
+    ]
+    for name, args, kwargs in candidates:
+        try:
+            if hasattr(call_py, name):
+                logging.debug(f"Attempting call_py.{name} for chat {chat_id}")
+                res = getattr(call_py, name)(*args, **kwargs)
+                if inspect.isawaitable(res):
+                    await res
+                logging.info(f"Stream started using {name} for chat {chat_id}")
+                return True
+        except Exception as e:
+            logging.debug(f"call_py.{name} failed for chat {chat_id}: {e}")
+            # continue trying other methods
+            continue
+    # fallback using _safe_call_py_method tries
+    for name, args, kwargs in candidates:
+        try:
+            res = await _safe_call_py_method(name, *args, **kwargs)
+            if res is not None:
+                logging.info(f"Stream started using safe_call {name} for chat {chat_id}")
+                return True
+        except Exception as e:
+            logging.debug(f"_safe_call_py_method {name} failed for chat {chat_id}: {e}")
+            continue
+    logging.warning(f"All attempts to start stream failed for chat {chat_id}")
+    return False
 
 # ---------- prepare_entry_from_reply ----------
 async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any]]:
@@ -981,7 +1020,12 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
             radio_tasks[chat_id].cancel()
             radio_tasks.pop(chat_id, None)
         stream_source = entry["stream_url"]
-        await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
+        # Use the new helper for robust start
+        started = await _start_stream_in_call(chat_id, stream_source)
+        if not started:
+            logging.error("Failed to start streaming in call for %s", chat_id)
+            return False
+
         thumb_path = None
         thumb_val = entry.get("thumbnail")
         title = entry.get("title") or "Unknown"
@@ -1603,7 +1647,14 @@ async def play_radio_station(_, query: CallbackQuery):
                 logging.warning(f"Cannot create invite/join assistant: {e_inv}")
                 await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
                 return
-        await _safe_call_py_method("play", chat_id, MediaStream(url))
+        # start the stream robustly
+        started = await _start_stream_in_call(chat_id, url)
+        if not started:
+            await leave_voice_chat(chat_id)
+            await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error="assistant failed to start stream"))
+            await query.answer("Failed to start radio", show_alert=True)
+            return
+
         msg = await query.message.edit_caption(
             caption=f"🎧 {station}\n🔴 LIVE Radio",
             reply_markup=player_controls_markup(chat_id),
