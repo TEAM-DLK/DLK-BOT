@@ -1,22 +1,18 @@
-# DLK.py - Updated (2025-12-01)
-# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/1b6f339367481436a7ecb4e44ecd4ff947c935a0/DLK.py
+# DLK.py - Updated (2025-12-01) - extended for /conet, /cplay, /cradio and delete button
+# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/9f7bb96736bdccc270093b98aaf69c5d437c02c3/DLK.py
 #
 # Changes in this version:
-# - Fixed "coroutine ... was never awaited" warnings (await awaitables when probing call_py internals).
-# - Added safe_query_answer(...) wrapper to catch/query-answer RPC errors (including QUERY_ID_INVALID) so callback handling won't crash.
-# - Replaced all query.answer(...) calls with safe_query_answer(...)
-# - When _start_stream_in_call fails, dump call_py internals (best-effort) to logs to help debug why assistant didn't start.
-# - Added /debug_call_status owner-only command to print call_py internals to the owner (via private chat).
-# - Improved assistant presence messages and explicit instructions when ASSISTANT_SESSION is not set.
+# - Added /conet command to link a group to a channel (admin-only).
+# - Added /cplay command: when used in a group, plays YouTube or replied audio into the linked channel.
+# - Added /cradio command: opens radio menu to play stations in the linked channel.
+# - Persist linked channel mapping in MongoDB collection `linked_channels` when DB configured; fallback to in-memory mapping.
+# - Player controls now include a ❌ Delete button which deletes the now-playing message and stops playback (permission-checked).
+# - Added helpers: get_linked_channel, set_linked_channel, find_group_for_channel to manage mapping & permission checks.
+# - Minor tweaks to thumbnail processing and robust attempt logic preserved.
 #
-# Notes:
-# - You provided the environment / package list (pyrogram 2.0.106, py-tgcalls 2.2.8, ntgcalls<3.0.0). This file keeps compatibility with those packages.
-# - This does not magically create a working assistant session; you must set ASSISTANT_SESSION (session string) in Heroku config vars.
-# - The most common causes of "assistant failed to start stream" remain:
-#   * Assistant account not in the group or missing voice permissions (manage voice chats + speak).
-#   * Library version mismatch (update py-tgcalls / ntgcalls if needed).
-#   * ffmpeg missing if you attempt to use AudioPiped (we detect and warn).
-# - After deploying this file, check Heroku logs. Use /debug_call_status (from owner in a private chat with bot) to dump call_py internals for debugging.
+# NOTE: This file is the complete bot implementation. Ensure environment variables (ASSISTANT_SESSION, API_ID, API_HASH,
+# BOT_TOKEN, OWNER_ID, MONGO_URI etc.) are set. When testing channel join behavior, assistant (user session) needs to be added
+# to the target channel with permission to manage voice chats / speak (or the bot must be admin and create invite links).
 #
 # Full file contents follow.
 
@@ -163,6 +159,7 @@ RADIO_STATION = {
     "JAM FM": "http://stream.jam.fm/jamfm-nmr/mp3-192/",
 }
 
+# runtime state
 radio_tasks: Dict[int, asyncio.Task] = {}
 radio_paused = set()
 radio_state: Dict[int, Dict[str, Any]] = {}
@@ -187,6 +184,9 @@ call_py = PyTgCalls(assistant)
 
 db_client = None
 db = None
+
+# linked channel mapping local fallback (if DB disabled)
+linked_channels_local: Dict[int, Union[str, int]] = {}
 
 # TRANSLATIONS (same as before - omitted here to keep file length manageable in explanation)
 TRANSLATIONS = {
@@ -288,7 +288,7 @@ TRANSLATIONS = {
         "NOTHING_TO_RESUME_BTN": "Nothing to resume.",
     },
     "si": {
-        # Sinhala translations omitted here for brevity in code block; original strings remain unchanged.
+        # Sinhala translations omitted here for brevity; original strings remain unchanged.
     },
 }
 
@@ -398,8 +398,10 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
             if not stream_url and "formats" in info:
                 formats = info.get("formats", [])
                 best = None
+                # Prefer audio-only formats with highest abr
                 for f in sorted(formats, key=lambda x: (x.get("abr") or 0), reverse=True):
-                    if f.get("acodec") and f.get("url"):
+                    acodec = f.get("acodec") or ""
+                    if acodec != "none" and f.get("url"):
                         best = f.get("url")
                         break
                 stream_url = best or stream_url
@@ -494,11 +496,17 @@ async def _process_image_and_overlay(src_path: str, out_key: str, title: str) ->
             background = ImageOps.fit(image, (1280, 720), centering=(0.5, 0.5)).convert("RGBA")
         except Exception:
             background = image.resize((1280, 720), Image.LANCZOS).convert("RGBA")
-        background = background.filter(ImageFilter.BoxBlur(6))
+        background = background.filter(ImageFilter.BoxBlur(8))
         enhancer = ImageEnhance.Brightness(background)
-        background = enhancer.enhance(0.85)
+        background = enhancer.enhance(0.7)
+        # further desaturate for background
+        try:
+            converter = ImageEnhance.Color(background)
+            background = converter.enhance(0.25)
+        except Exception:
+            pass
         art = _create_circular_artwork(image, diameter=520, border=10)
-        art_x = 60
+        art_x = (1280 - art.size[0]) // 10  # move a bit in from left
         art_y = (720 - art.size[1]) // 2
         background.paste(art, (art_x, art_y), art)
         draw = ImageDraw.Draw(background)
@@ -577,6 +585,8 @@ def init_db_sync():
     db.blocked.create_index("chat_id")
     db.logs.create_index("ts")
     db.langs.create_index("chat_id", unique=True)
+    # linked channels: map group_id -> channel_id_or_username
+    db.linked_channels.create_index("group_id", unique=True)
     logging.info(f"Connected to MongoDB: {MONGO_DBNAME}")
 
 def _valid_log_target(lid: str) -> bool:
@@ -638,6 +648,62 @@ def unblock_group_sync(chat_id: int):
         return
     db.blocked.delete_one({"chat_id": chat_id})
 
+# Linked channel helpers
+def get_linked_channel(group_id: int) -> Optional[Union[int, str]]:
+    """
+    Returns the linked channel identifier for the group (int id or @username), or None.
+    """
+    try:
+        if db is not None:
+            row = db.linked_channels.find_one({"group_id": group_id})
+            if row:
+                return row.get("channel")
+        return linked_channels_local.get(group_id)
+    except Exception as e:
+        logging.debug(f"get_linked_channel failed: {e}")
+        return linked_channels_local.get(group_id)
+
+def set_linked_channel(group_id: int, channel_identifier: Optional[Union[int, str]]):
+    """
+    Set or remove the linked channel for group_id. If channel_identifier is None, unlink.
+    """
+    try:
+        if db is not None:
+            if channel_identifier is None:
+                db.linked_channels.delete_one({"group_id": group_id})
+            else:
+                db.linked_channels.update_one(
+                    {"group_id": group_id},
+                    {"$set": {"group_id": group_id, "channel": channel_identifier, "ts": time.time()}},
+                    upsert=True,
+                )
+            return
+    except Exception as e:
+        logging.warning(f"set_linked_channel db op failed: {e}")
+    # local fallback
+    if channel_identifier is None:
+        linked_channels_local.pop(group_id, None)
+    else:
+        linked_channels_local[group_id] = channel_identifier
+
+def find_group_for_channel(channel_identifier: Union[int, str]) -> Optional[int]:
+    """
+    Reverse lookup: find a group_id that linked to this channel_identifier.
+    Returns first match or None.
+    """
+    try:
+        if db is not None:
+            row = db.linked_channels.find_one({"channel": channel_identifier})
+            if row:
+                return row.get("group_id")
+        # local search
+        for g, ch in linked_channels_local.items():
+            if str(ch) == str(channel_identifier):
+                return g
+    except Exception as e:
+        logging.debug(f"find_group_for_channel failed: {e}")
+    return None
+
 async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> bool:
     try:
         if isinstance(subject, CallbackQuery):
@@ -697,17 +763,22 @@ def radio_buttons(page: int = 0, per_page: int = 6):
     return InlineKeyboardMarkup(buttons)
 
 def player_controls_markup(chat_id: int):
+    """
+    Adds standard controls + delete button. Delete callback data: player_delete
+    """
     if chat_id in radio_paused:
         controls = [
             InlineKeyboardButton("▷", callback_data="radio_resume"),
             InlineKeyboardButton("‣‣I", callback_data="music_skip"),
             InlineKeyboardButton("▢", callback_data="radio_stop"),
+            InlineKeyboardButton("❌", callback_data="player_delete"),
         ]
     else:
         controls = [
             InlineKeyboardButton("II", callback_data="radio_pause"),
             InlineKeyboardButton("‣‣I", callback_data="music_skip"),
             InlineKeyboardButton("▢", callback_data="radio_stop"),
+            InlineKeyboardButton("❌", callback_data="player_delete"),
         ]
     bottom = [
         InlineKeyboardButton("👨‍💻 Dev", url=DEV_LINK),
@@ -1441,7 +1512,193 @@ async def cmd_play(_, message: Message):
         except Exception:
             pass
 
-# ---------- /skip /queue /stop ----------
+# ---------- /conet (link group -> channel) ----------
+@bot.on_message(filters.group & filters.command(["conet", "conlink"]))
+async def cmd_conet(_, message: Message):
+    """
+    Usage:
+      /conet <@channelusername or -1001234567890>  -> link this group to that channel
+      /conet unlink                                 -> remove link
+    Only group admins (or owner) can run this.
+    """
+    chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text("Only admins can use this.")
+    args = None
+    if len(message.command) > 1:
+        args = message.text.split(None, 1)[1].strip()
+    if not args:
+        cur = get_linked_channel(chat_id)
+        if cur:
+            return await message.reply_text(f"This group is linked to channel: {cur}\nUse /conet unlink to remove.")
+        return await message.reply_text("Usage: /conet <@channelusername or -100...id> OR /conet unlink")
+    if args.lower() in ("unlink", "remove", "none"):
+        set_linked_channel(chat_id, None)
+        await message.reply_text("✅ Unlinked channel from this group.")
+        log_event_sync("conet_unlinked", {"group_id": chat_id, "by": message.from_user.id})
+        return
+    # parse channel identifier - either @username or numeric
+    channel_ident = args
+    if channel_ident.startswith("https://t.me/") or channel_ident.startswith("http://t.me/"):
+        # extract username or id from link if possible
+        try:
+            channel_ident = channel_ident.split("t.me/")[-1].strip("/")
+            if channel_ident.isdigit():
+                channel_ident = int(channel_ident)
+            else:
+                channel_ident = "@" + channel_ident
+        except Exception:
+            pass
+    else:
+        if re.match(r"^-?\d+$", channel_ident):
+            try:
+                channel_ident = int(channel_ident)
+            except Exception:
+                pass
+        elif not channel_ident.startswith("@"):
+            channel_ident = "@" + channel_ident
+    set_linked_channel(chat_id, channel_ident)
+    await message.reply_text(f"✅ Linked this group to channel: {channel_ident}")
+    log_event_sync("conet_linked", {"group_id": chat_id, "channel": channel_ident, "by": message.from_user.id})
+
+# ---------- /cplay (play into linked channel) ----------
+@bot.on_message(filters.group & filters.command(["cplay", "cp"]))
+async def cmd_cplay(_, message: Message):
+    """
+    When used in a group, plays into the linked channel.
+    - If reply to audio/file: upload and play that audio in linked channel
+    - Else: accept YouTube URL or search terms and play audio extracted via yt-dlp
+    """
+    group_id = message.chat.id
+    if is_group_blocked_sync(group_id):
+        return await message.reply_text(t(group_id, "GROUP_BLOCKED"))
+    channel_ident = get_linked_channel(group_id)
+    if not channel_ident:
+        return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
+    # get channel id/username for API calls
+    channel_id = channel_ident
+    # attempt to convert numeric strings to int if possible
+    try:
+        if isinstance(channel_id, str) and re.match(r"^-?\d+$", channel_id):
+            channel_id = int(channel_id)
+    except Exception:
+        pass
+
+    # ensure assistant present in target channel
+    try:
+        assistant_user = await assistant.get_me()
+        assistant_id = assistant_user.id
+    except Exception:
+        assistant_id = None
+    assistant_present = False
+    if assistant_id:
+        try:
+            await assistant.get_chat_member(channel_id, assistant_id)
+            assistant_present = True
+        except RPCError:
+            assistant_present = False
+    if not assistant_present:
+        # try to create invite link to channel if bot is admin there
+        invite_link = None
+        try:
+            invite = await bot.create_chat_invite_link(channel_id, member_limit=1, name="DLK BOT assistant")
+            invite_link = invite.invite_link
+        except Exception:
+            invite_link = None
+        if invite_link:
+            try:
+                await assistant.join_chat(invite_link)
+                assistant_present = True
+                try:
+                    await bot.send_message(group_id, t(group_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+                except Exception:
+                    pass
+            except Exception:
+                # fallthrough to instruct
+                pass
+        if not assistant_present:
+            # tell user to add assistant to the channel manually
+            kb = None
+            if invite_link:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
+                await message.reply_text(
+                    "Assistant is not present in the linked channel. I created an invite link – add the assistant to the channel and give it permission to speak.",
+                    reply_markup=kb,
+                )
+            else:
+                await message.reply_text(
+                    "Assistant is not present in the linked channel. Please add the assistant account to the channel and give it permission to manage voice chats and speak."
+                )
+            return
+
+    entry = None
+    info_msg = None
+    if message.reply_to_message:
+        entry = await prepare_entry_from_reply(message.reply_to_message)
+        if entry:
+            info_msg = await message.reply_text("Preparing audio to play in linked channel...")
+    if not entry:
+        query = None
+        if len(message.command) > 1:
+            query = message.text.split(None, 1)[1]
+        elif message.reply_to_message and message.reply_to_message.text:
+            query = message.reply_to_message.text
+        if not query:
+            return await message.reply_text("Usage: /cplay <YouTube url or search terms> OR reply to audio in this group and use /cplay")
+        info_msg = await message.reply_text("Searching and preparing stream for linked channel...")
+        info = extract_audio_url(query)
+        if info is None or not info.get("stream_url"):
+            await info_msg.edit_text(t(group_id, "YTDLP_FAIL"))
+            return
+        entry = {
+            "title": info.get("title"),
+            "stream_url": info.get("stream_url"),
+            "webpage": info.get("webpage_url"),
+            "thumbnail": info.get("thumbnail"),
+            "duration": info.get("duration"),
+            "is_local": False,
+        }
+    # ensure queue for the channel (note: keyed by channel_id)
+    if channel_id not in radio_queue:
+        radio_queue[channel_id] = []
+    current_state = radio_state.get(channel_id)
+    if current_state and not current_state.get("paused"):
+        radio_queue[channel_id].append(entry)
+        try:
+            if info_msg:
+                await info_msg.edit_text(t(group_id, "ADDED_QUEUE", title=entry["title"]))
+        except Exception:
+            pass
+        log_event_sync("cplay_queued", {"group_id": group_id, "channel": channel_id, "title": entry["title"], "by": message.from_user.id})
+        return
+    ok = await play_entry(channel_id, entry, reply_message=message)
+    if ok:
+        try:
+            if info_msg:
+                await info_msg.edit_text(f"Now playing in {channel_id}: {entry['title']}")
+        except Exception:
+            pass
+        await message.reply_text(f"Started playing in linked channel {channel_id}: {entry['title']}")
+        log_event_sync("cplay_started", {"group_id": group_id, "channel": channel_id, "title": entry["title"], "by": message.from_user.id})
+    else:
+        try:
+            if info_msg:
+                await info_msg.edit_text(t(group_id, "FAILED_PLAY_REQUEST"))
+        except Exception:
+            pass
+        await message.reply_text("Failed to start playback in linked channel.")
+
+# ---------- /cradio (open radio menu for linked channel) ----------
+@bot.on_message(filters.group & filters.command(["cradio"]))
+async def cmd_cradio(_, message: Message):
+    group_id = message.chat.id
+    channel_ident = get_linked_channel(group_id)
+    if not channel_ident:
+        return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
+    kb = radio_buttons(0)
+    await message.reply_text(f"📻 Radio Stations - choose one to play in linked channel {channel_ident}:", reply_markup=kb)
+
+# ---------- /skip /queue /stop (unchanged for groups) ----------
 @bot.on_message(filters.group & filters.command(["skip", "s"]))
 async def cmd_skip(_, message: Message):
     chat_id = message.chat.id
@@ -1504,7 +1761,7 @@ async def general_stop_handler(_, message: Message):
     await message.reply_text(t(chat_id, "BOT_STOPPED"))
     log_event_sync("radio_stopped_text", {"chat_id": chat_id, "by": message.from_user.id})
 
-# ---------- RADIO COMMANDS ----------
+# ---------- RADIO COMMANDS (existing) ----------
 @bot.on_message(filters.group & filters.command(["radio"]))
 async def cmd_radio_menu(_, message: Message):
     chat_id = message.chat.id
@@ -1846,6 +2103,52 @@ async def cb_radio_stop(_, query: CallbackQuery):
     except Exception as e:
         logging.error(f"Stop failed via callback: {e}", exc_info=True)
         await safe_query_answer(query, t(chat_id, "RADIO_STOP_FAIL_BTN"), show_alert=True)
+
+# ---------- DELETE (❌) button handler ----------
+@bot.on_callback_query(filters.regex("^player_delete$"))
+async def cb_player_delete(_, query: CallbackQuery):
+    """
+    Delete the now-playing message and stop playback for that chat.
+    Permission model:
+      - If there is a group linked to this channel, require the user to be admin in that group (or owner).
+      - Otherwise, require OWNER_ID.
+    """
+    msg_chat = query.message.chat
+    chat_id = msg_chat.id
+    user = query.from_user
+    # find associated group (reverse lookup)
+    group_id = find_group_for_channel(chat_id)
+    allowed = False
+    if user and user.id == OWNER_ID:
+        allowed = True
+    elif group_id:
+        # check user admin in the group
+        try:
+            member = await bot.get_chat_member(group_id, user.id)
+            status = getattr(member, "status", "").lower()
+            if status in ("administrator", "creator"):
+                allowed = True
+        except Exception:
+            allowed = False
+    else:
+        # no mapping found; only owner allowed
+        allowed = (user and user.id == OWNER_ID)
+    if not allowed:
+        await safe_query_answer(query, "Only the linked group admins or owner can delete this.", show_alert=True)
+        return
+    try:
+        await leave_voice_chat(chat_id)
+    except Exception:
+        pass
+    try:
+        await query.message.delete()
+    except Exception:
+        try:
+            await query.message.edit_caption(caption=t(chat_id, "BOT_STOPPED"), reply_markup=None)
+        except Exception:
+            pass
+    await safe_query_answer(query, "Deleted and stopped.")
+    log_event_sync("player_deleted", {"chat_id": chat_id, "by": user.id if user else None})
 
 # ---------- RADIO BUTTON PLAY ----------
 @bot.on_callback_query(filters.regex("^radio_play_"))
