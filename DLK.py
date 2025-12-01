@@ -6,6 +6,7 @@
 # - Added robust playback join logic that tries multiple PyTgCalls methods
 #   (play, join_group_call, join_call, start_stream) so assistant actually
 #   joins the voice chat and plays streams/local audio.
+# - Added automatic retry + restart of PyTgCalls/assistant when playback fails.
 # - Kept existing behavior and messages; added logging for failures.
 
 import os
@@ -302,9 +303,9 @@ TRANSLATIONS = {
         "STATION_URL_NOT_FOUND": "මේ station එකට URL එක හම්බුනේ නෑ!",
         "ASSISTANT_BLOCKED_GROUP": "මේ group එකට DLK BOT භාවිතා කරන්න බැරි වෙන්න block කරලා තියෙන්නේ.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant මේ group එකේ නෑ. Assistant account එක add කරලා නැවත උත්සහ කරන්න.",
-        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic...",
+        "ASSISTANT_INVITE_TEXT": "Assistant group එකේ නෑ. Invite link එකක් හදලා දීලා තියෙනවා — assistant account එක manually add කරලා voic[...]
         "ASSISTANT_JOIN_INFO": "🤖 Assistant group එකට join වුනා. Voice chat manage + speak permission දේන්න.",
-        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන්න.",
+        "ASSISTANT_INVITE_FAIL_TEXT": "Assistant ට auto invite කරන්න බැරි උනා. ඔයාම assistant account එක add කරලා නැවත උත්සහ කරන��[...]
         "ASSISTANT_INVITE_HELP_TEXT": (
             "Assistant account එක add කරන විදිහ:\n\n"
             "1. Group info -> Administrators -> Add Administrator\n"
@@ -912,58 +913,116 @@ async def ensure_assistant_in_chat(chat_id: int) -> bool:
         return False
 
 # ---------- PyTgCalls robust play helper ----------
+async def _restart_assistant_and_pytgcalls():
+    """
+    Try to gracefully restart assistant client and pytgcalls instance to recover from transient failures.
+    This is a best-effort helper.
+    """
+    try:
+        logging.debug("_restart_assistant_and_pytgcalls: attempting to restart PyTgCalls and assistant")
+        try:
+            call_py.stop()
+        except Exception as e:
+            logging.debug(f"_restart_assistant_and_pytgcalls: call_py.stop failed: {e}")
+        await asyncio.sleep(0.5)
+        try:
+            call_py.start()
+        except Exception as e:
+            logging.debug(f"_restart_assistant_and_pytgcalls: call_py.start failed: {e}")
+        # Restart assistant session (best-effort)
+        try:
+            assistant.stop()
+        except Exception:
+            pass
+        await asyncio.sleep(0.3)
+        try:
+            assistant.start()
+        except Exception as e:
+            logging.debug(f"_restart_assistant_and_pytgcalls: assistant.start failed: {e}")
+        await asyncio.sleep(0.5)
+    except Exception as e:
+        logging.debug(f"_restart_assistant_and_pytgcalls unexpected error: {e}")
+
 async def _pytgcalls_play(chat_id: int, stream_url: str) -> bool:
     """
     Try several PyTgCalls methods so the assistant actually joins the group call
     and starts streaming. Returns True on success.
+
+    Adds an automatic restart & retry if first attempts fail (to recover from
+    network / session transient issues like those in the logs).
     """
     try:
-        # 1) Preferred: call play if available (used in original code)
-        try:
-            res = await _safe_call_py_method("play", chat_id, MediaStream(stream_url))
-            if res is not None:
-                logging.debug(f"_pytgcalls_play: play succeeded for {chat_id}")
-                return True
-        except Exception as e:
-            logging.debug(f"_pytgcalls_play: play() attempt failed: {e}")
+        # Try twice: first normal attempt, second after restart
+        for attempt in range(2):
+            logging.debug(f"_pytgcalls_play: attempt {attempt+1} for chat {chat_id} url {stream_url}")
+            try:
+                # 1) Preferred: call play if available (used in original code)
+                try:
+                    res = await _safe_call_py_method("play", chat_id, MediaStream(stream_url))
+                    if res is not None:
+                        logging.debug(f"_pytgcalls_play: play succeeded for {chat_id}")
+                        return True
+                except Exception as e:
+                    logging.debug(f"_pytgcalls_play: play() attempt failed: {e}")
 
-        # 2) join_group_call (some PyTgCalls versions expose this)
-        try:
-            res = await _safe_call_py_method("join_group_call", chat_id, MediaStream(stream_url))
-            if res is not None:
-                logging.debug(f"_pytgcalls_play: join_group_call succeeded for {chat_id}")
-                return True
-        except Exception as e:
-            logging.debug(f"_pytgcalls_play: join_group_call() attempt failed: {e}")
+                # 2) join_group_call (some PyTgCalls versions expose this)
+                try:
+                    res = await _safe_call_py_method("join_group_call", chat_id, MediaStream(stream_url))
+                    if res is not None:
+                        logging.debug(f"_pytgcalls_play: join_group_call succeeded for {chat_id}")
+                        return True
+                except Exception as e:
+                    logging.debug(f"_pytgcalls_play: join_group_call() attempt failed: {e}")
 
-        # 3) join_call (older/newer names)
-        try:
-            res = await _safe_call_py_method("join_call", chat_id, MediaStream(stream_url))
-            if res is not None:
-                logging.debug(f"_pytgcalls_play: join_call succeeded for {chat_id}")
-                return True
-        except Exception as e:
-            logging.debug(f"_pytgcalls_play: join_call() attempt failed: {e}")
+                # 3) join_call (older/newer names)
+                try:
+                    res = await _safe_call_py_method("join_call", chat_id, MediaStream(stream_url))
+                    if res is not None:
+                        logging.debug(f"_pytgcalls_play: join_call succeeded for {chat_id}")
+                        return True
+                except Exception as e:
+                    logging.debug(f"_pytgcalls_play: join_call() attempt failed: {e}")
 
-        # 4) start_stream or start_playback fallback
-        try:
-            res = await _safe_call_py_method("start_stream", chat_id, stream_url)
-            if res is not None:
-                logging.debug(f"_pytgcalls_play: start_stream succeeded for {chat_id}")
-                return True
-        except Exception as e:
-            logging.debug(f"_pytgcalls_play: start_stream() attempt failed: {e}")
+                # 4) start_stream or start_playout fallback
+                try:
+                    res = await _safe_call_py_method("start_stream", chat_id, stream_url)
+                    if res is not None:
+                        logging.debug(f"_pytgcalls_play: start_stream succeeded for {chat_id}")
+                        return True
+                except Exception as e:
+                    logging.debug(f"_pytgcalls_play: start_stream() attempt failed: {e}")
 
-        try:
-            res = await _safe_call_py_method("start_playout", chat_id, stream_url)
-            if res is not None:
-                logging.debug(f"_pytgcalls_play: start_playout succeeded for {chat_id}")
-                return True
-        except Exception:
-            pass
+                try:
+                    res = await _safe_call_py_method("start_playout", chat_id, stream_url)
+                    if res is not None:
+                        logging.debug(f"_pytgcalls_play: start_playout succeeded for {chat_id}")
+                        return True
+                except Exception as e:
+                    logging.debug(f"_pytgcalls_play: start_playout() attempt failed: {e}")
 
-        # If nothing worked
-        logging.debug("_pytgcalls_play: no available play/join method succeeded")
+                # 5) try generic 'start' or 'stream' names (best-effort, some forks expose these)
+                for alt in ("start", "stream", "play_stream"):
+                    try:
+                        res = await _safe_call_py_method(alt, chat_id, stream_url)
+                        if res is not None:
+                            logging.debug(f"_pytgcalls_play: {alt} succeeded for {chat_id}")
+                            return True
+                    except Exception as e:
+                        logging.debug(f"_pytgcalls_play: {alt}() attempt failed: {e}")
+
+                # If nothing worked on this attempt, prepare to retry (maybe restart)
+                logging.debug("_pytgcalls_play: no available play/join method succeeded on this attempt")
+            except Exception as e:
+                logging.debug(f"_pytgcalls_play inner error: {e}")
+
+            # If first attempt failed, try to restart PyTgCalls/assistant and retry once
+            if attempt == 0:
+                logging.info("_pytgcalls_play: first attempt failed — restarting PyTgCalls/assistant and retrying")
+                await _restart_assistant_and_pytgcalls()
+                # small delay before retrying
+                await asyncio.sleep(1.0)
+        # If we got here, both attempts failed
+        logging.debug("_pytgcalls_play: all attempts failed")
         return False
     except Exception as e:
         logging.debug(f"_pytgcalls_play error: {e}")
