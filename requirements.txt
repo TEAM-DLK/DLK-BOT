@@ -1,4 +1,4 @@
 pymongo
 yt-dlp
 youtube-search-python
-pyrogram aiofiles Pillow TgCrypto python-dotenv aiohttp attrs multidict frozenlist yarl --no-cache-dir --only-binary=all
+pyrogram aiofiles Pillow TgCrypto python-dotenv aiohttp attrs multidict frozenlist yarl
