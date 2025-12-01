@@ -1,15 +1,4 @@
-pyrogram
-aiofiles
-Pillow
-TgCrypto
-python-dotenv
-aiohttp
-attrs
-multidict
-frozenlist
-yarl
 pymongo
 yt-dlp
 youtube-search-python
-py-tgcalls
-ntgcalls
+pyrogram aiofiles Pillow TgCrypto python-dotenv aiohttp attrs multidict frozenlist yarl --no-cache-dir --only-binary=all
