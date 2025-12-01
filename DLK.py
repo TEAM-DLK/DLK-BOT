@@ -26,6 +26,20 @@ except Exception:
     pyrogram.errors.GroupcallForbidden = GroupcallForbidden
 
 from pyrogram.client import Client as _PyroClient
+_original_handle_updates = _PyroClient.handle_updates
+
+async def _safe_handle_updates(self, updates):
+    try:
+        return await _original_handle_updates(self, updates)
+    except ValueError as e:
+        # ignore pyrogram ValueError when it complains about "Peer id invalid: -100..."
+        # this often happens when an incoming update references a peer id not present in local storage
+        msg = str(e)
+        if msg.startswith("Peer id invalid: -100") or "Peer id invalid:" in msg:
+            logging.debug(f"Ignored invalid peer id in updates: {e}")
+            return
+        # otherwise re-raise
+        raise
 
 # pytgcalls for voice - note: must match installed version
 from pytgcalls import PyTgCalls
