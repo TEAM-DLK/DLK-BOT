@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
 set -e
-# ensure virtualenv python is used
+
+# optional: print python version for debugging
+python --version
+
+# Run the bot (adjust path if needed)
 python DLK.py
