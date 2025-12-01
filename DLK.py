@@ -1,19 +1,15 @@
-# Full DLK.py (updated further to improve call start detection and add more fallbacks)
-# NOTE: This file is a modified version of the repository file at:
-# https://github.com/TEAM-DLK/DLK-BOT/DLK.py
+# Full DLK.py (fixed _is_call_active coroutine warnings and improved active-call detection)
+# This version addresses RuntimeWarning: "coroutine 'CallHolder.group_calls' was never awaited"
+# by ensuring we await coroutine attributes on call_py where appropriate and safely handle
+# async properties exposed by different PyTgCalls/NTgCalls versions.
 #
-# Summary of additional changes in this version:
-# - Broadened _is_call_active_sync heuristics (try more internal attributes and shapes)
-# - Increased wait times / retries after attempting to start streams
-# - Try calling call_py methods with several plausible kwarg names for input stream (positional, input_stream, audio_stream)
-# - Additional logging to help diagnose why join/play didn't actually start (permissions, missing ffmpeg, unsupported API)
-# - Helpful user-facing messages when ffmpeg is missing and AudioPiped is used
-# - Minor robustness fixes around assistant start and call_py.start/stop flows
+# NOTE:
+# - I changed the call-active detection to be fully async and to await any awaitable attributes.
+# - The rest of the file remains functionally the same as the previous patch.
+# - Deploy this file and watch the Heroku logs for fewer runtime warnings and clearer "verified=True" attempts.
 #
-# Please ensure:
-# - Assistant account has been added to the group and has permission to manage voice chats + speak.
-# - ffmpeg is installed if using AudioPiped (Heroku: add ffmpeg buildpack) when streaming remote sources.
-# - Use a recent compatible version of PyTgCalls / NTgCalls / pytgcalls and ntgcalls packages.
+# Please ensure you have the assistant session present, assistant has voice permissions in the group,
+# and ffmpeg is present if using AudioPiped. Do not commit secrets to the repo.
 
 import os
 import re
@@ -829,39 +825,89 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
         logging.debug(f"_safe_call_py_method {method_name} failed: {e}")
         return None
 
-def _is_call_active_sync(chat_id: int) -> bool:
+# ---------- FIXED: async call-active detection ----------
+async def _is_call_active(chat_id: int) -> bool:
     """
-    Best-effort synchronous check whether call_py has an active call for chat_id.
-    Different PyTgCalls / ntgcalls versions expose active calls differently; try many common patterns.
+    Async best-effort check whether call_py has an active call for chat_id.
+    Handles attributes that might be coroutine objects / async properties in different library versions.
+    This function awaits awaitable attributes where safe to do so to avoid "coroutine was never awaited".
     """
     try:
-        # 1) Official getter
-        try:
-            if hasattr(call_py, "get_call"):
-                try:
-                    c = call_py.get_call(chat_id)
-                    if c:
-                        return True
-                except Exception:
-                    pass
-            if hasattr(call_py, "get_active_call"):
-                try:
-                    c = call_py.get_active_call(chat_id)
-                    if c:
-                        return True
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 2) Common attributes: active_calls, _active_calls, _group_calls, _calls
-        for attr_name in ("active_calls", "_active_calls", "_group_calls", "group_calls", "_calls", "calls", "_call_queue"):
-            ac = getattr(call_py, attr_name, None)
-            if not ac:
+        # 1) Common direct getters that often exist and accept chat_id
+        for getter in ("get_call", "get_active_call"):
+            attr = getattr(call_py, getter, None)
+            if not attr:
                 continue
-            # dict-like
+            try:
+                # call with chat_id
+                val = attr(chat_id)
+                if inspect.isawaitable(val):
+                    val = await val
+                if val:
+                    return True
+            except Exception:
+                # continue trying other methods
+                continue
+
+        # 2) Common attribute containers that may be dict/list or async coroutine returning such
+        attr_names = ("active_calls", "_active_calls", "_group_calls", "group_calls", "calls", "_calls")
+        for attr_name in attr_names:
+            ac = getattr(call_py, attr_name, None)
+            if ac is None:
+                continue
+
+            # If attribute itself is an awaitable/coroutine object, await it
+            if inspect.isawaitable(ac):
+                try:
+                    ac = await ac
+                except Exception:
+                    # couldn't await, skip
+                    continue
+
+            # If attribute is a coroutinefunction (callable async), call it (no args) and await result
+            if inspect.iscoroutinefunction(ac):
+                try:
+                    res = ac()
+                    if inspect.isawaitable(res):
+                        res = await res
+                    ac = res
+                except Exception:
+                    continue
+
+            # If attribute is callable (sync), try calling with chat_id if signature suggests it accepts args.
+            if callable(ac) and not isinstance(ac, (dict, list, tuple, set)):
+                try:
+                    sig = None
+                    try:
+                        sig = inspect.signature(ac)
+                    except Exception:
+                        sig = None
+                    # If it accepts parameters, try calling with chat_id, otherwise call without args.
+                    called = False
+                    if sig is not None and len(sig.parameters) > 0:
+                        try:
+                            val = ac(chat_id)
+                            if inspect.isawaitable(val):
+                                val = await val
+                            ac = val
+                            called = True
+                        except Exception:
+                            called = False
+                    if not called:
+                        try:
+                            val = ac()
+                            if inspect.isawaitable(val):
+                                val = await val
+                            ac = val
+                        except Exception:
+                            # can't safely call; treat attribute as opaque object
+                            pass
+                except Exception:
+                    pass
+
+            # Now handle common container types
             if isinstance(ac, dict):
-                # check keys and values
+                # keys might be chat IDs
                 if chat_id in ac:
                     return True
                 try:
@@ -869,18 +915,14 @@ def _is_call_active_sync(chat_id: int) -> bool:
                         return True
                 except Exception:
                     pass
-                for k, v in ac.items():
+                for v in ac.values():
                     try:
                         if getattr(v, "chat_id", None) == chat_id:
                             return True
                         if getattr(v, "peer_id", None) == chat_id:
                             return True
-                        # some implementations store integer-like keys, check nested attr
-                        if hasattr(v, "group_call") and getattr(v.group_call, "chat_id", None) == chat_id:
-                            return True
                     except Exception:
                         pass
-            # list-like
             elif isinstance(ac, (list, tuple, set)):
                 for item in ac:
                     try:
@@ -891,21 +933,28 @@ def _is_call_active_sync(chat_id: int) -> bool:
                     except Exception:
                         pass
             else:
-                # unknown object - try attributes inside
+                # object with attributes
                 try:
                     if getattr(ac, "chat_id", None) == chat_id or getattr(ac, "peer_id", None) == chat_id:
+                        return True
+                    # group_call nested attr
+                    if hasattr(ac, "group_call") and getattr(ac.group_call, "chat_id", None) == chat_id:
                         return True
                 except Exception:
                     pass
 
-        # 3) Some implementations expose .is_connected / .is_running
+        # 3) Some libraries expose "is_connected"/"is_running"
         for check in ("is_connected", "is_running", "running"):
+            attr = getattr(call_py, check, None)
+            if not attr:
+                continue
             try:
-                attr = getattr(call_py, check, None)
                 if callable(attr):
-                    ok = attr()
-                    if ok:
-                        # can't be sure it's for this chat but report active
+                    res = attr()
+                    if inspect.isawaitable(res):
+                        res = await res
+                    if isinstance(res, bool) and res:
+                        # not chat-specific but indicates the library thinks it's running
                         return True
                 elif isinstance(attr, bool) and attr:
                     return True
@@ -915,10 +964,6 @@ def _is_call_active_sync(chat_id: int) -> bool:
         return False
     except Exception:
         return False
-
-async def _is_call_active(chat_id: int) -> bool:
-    # run sync checker in case underlying structures are sync
-    return _is_call_active_sync(chat_id)
 
 async def _force_leave_call(chat_id: int):
     """
