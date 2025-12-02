@@ -1,18 +1,20 @@
-# DLK.py - Updated (2025-12-02) - dual-play support (channel audio + group video)
+# DLK.py - Updated (2025-12-02)
 # Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/9f7bb96736bdccc270093b98aaf69c5d437c02c3/DLK.py
 #
-# Additions in this version:
-# - extract_audio_video_urls: attempt to obtain both audio-only and video (or combined) stream URLs from yt-dlp.
-# - play_dual: when playing a YouTube track via /cplay into a linked channel, this starts:
-#     * audio-only stream into the linked channel (so channel plays mp3)
-#     * video (or combined) stream into the group voice chat (so group gets the "video" play)
-#   UI (Now Playing) is posted in the group (as requested).
-# - cmd_cplay: when YouTube webpage detected, attempts to use dual-play; falls back to single-play if dual streams cannot be resolved.
+# Summary of fixes / changes:
+# - When playing into a linked channel via /cplay or /cradio, the "Now Playing" UI message is posted into the group
+#   that linked the channel (so the UI appears in the group, not inside the channel).
+# - Added /cplend and /crend commands (channel-play end) to stop playback in the linked channel from the group.
+# - When the track finishes (track_watcher), assistant leaves the voice chat and UI is updated in the correct UI chat.
+# - Call resolution: when a linked channel is stored as a username (e.g. @DLKDEVELOPERS), the bot resolves it
+#   to a numeric chat.id before attempting to start/join calls. This avoids call_py warnings for string ids.
+# - Callbacks (pause/resume/skip/stop/delete) that come from UI chat (group) are mapped to the voice chat ID
+#   using a helper, so controls operate on the actual voice call.
+# - Minor robustness and logging improvements.
 #
-# Note: This is a best-effort implementation. Actual video playout behaviour depends on your PyTgCalls/wrapping
-# capabilities and availability of ffmpeg, AudioPiped, MediaStream, and whether assistant user is present
-# in both chats (group + linked channel) with permission to speak. You may need to adapt stream selection
-# logic to match your runtime and PyTgCalls version.
+# Deploy notes:
+# - Ensure ASSISTANT_SESSION is set and assistant account has been added to the target channel with permission to speak.
+# - If you store channels as usernames (e.g. @mychannel) set_linked_channel keeps that, but runtime resolves to numeric id.
 #
 # Full file contents follow.
 
@@ -23,7 +25,7 @@ import asyncio
 import logging
 import random
 import inspect
-from typing import Union, Optional, Dict, Any, List, Tuple
+from typing import Union, Optional, Dict, Any, List
 from urllib.parse import urlparse, parse_qs
 import subprocess
 import json
@@ -403,81 +405,6 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
             }
     except Exception as e:
         logging.warning(f"yt_dlp failed: {e}")
-        return None
-
-# New: Extract both audio-only and video (or combined) stream URLs where possible
-def extract_audio_video_urls(query: str) -> Optional[Dict[str, Optional[str]]]:
-    """
-    Returns dict: {"audio_url": str or None, "video_url": str or None, "title": str, "thumbnail": str, "duration": int}
-    """
-    if youtube_dl is None:
-        logging.debug("yt_dlp not installed - can't extract audio/video separately.")
-        return None
-    target = query if looks_like_url(query) else f"ytsearch1:{query}"
-    ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, "noplaylist": True}
-    if YT_DLP_COOKIES and os.path.isfile(YT_DLP_COOKIES):
-        ydl_opts["cookiefile"] = YT_DLP_COOKIES
-    try:
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(target, download=False)
-            if not info:
-                return None
-            if "entries" in info and isinstance(info["entries"], list) and info["entries"]:
-                info = info["entries"][0]
-            formats = info.get("formats", []) or []
-            audio_url = None
-            video_url = None
-            # Find best audio-only
-            audio_candidates = []
-            video_candidates = []
-            for f in formats:
-                acodec = (f.get("acodec") or "").lower()
-                vcodec = (f.get("vcodec") or "").lower()
-                url = f.get("url")
-                if not url:
-                    continue
-                # audio-only candidate (no video)
-                if vcodec in (None, "", "none") and acodec and acodec != "none":
-                    abr = f.get("abr") or 0
-                    audio_candidates.append((abr, url))
-                # video (prefer combined or video+audio)
-                if vcodec and vcodec != "none":
-                    # prefer formats that also include audio (acodec != none)
-                    has_audio = acodec and acodec != "none"
-                    # resolution or tbr heuristic
-                    height = f.get("height") or 0
-                    tbr = f.get("tbr") or 0
-                    score = (1 if has_audio else 0) * 10000 + (height or tbr)
-                    video_candidates.append((score, url))
-            if audio_candidates:
-                audio_candidates.sort(reverse=True)
-                audio_url = audio_candidates[0][1]
-            # For video, pick highest scored
-            if video_candidates:
-                video_candidates.sort(reverse=True)
-                video_url = video_candidates[0][1]
-            # If no separate video_url found but info.get('url') exists, use that as fallback
-            fallback = info.get("url")
-            if not audio_url and fallback:
-                audio_url = fallback
-            if not video_url and fallback:
-                video_url = fallback
-            duration = info.get("duration")
-            try:
-                if duration is not None:
-                    duration = int(duration)
-            except Exception:
-                duration = None
-            return {
-                "audio_url": audio_url,
-                "video_url": video_url,
-                "title": info.get("title") or "Unknown",
-                "thumbnail": info.get("thumbnail"),
-                "duration": duration,
-                "webpage_url": info.get("webpage_url") or info.get("id"),
-            }
-    except Exception as e:
-        logging.debug(f"extract_audio_video_urls failed: {e}")
         return None
 
 # ---------- THUMBNAILS ----------
@@ -1480,133 +1407,6 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
             pass
         return False
 
-# New: play_dual - play audio in channel and video in group
-async def play_dual(channel_voice_id: int, group_voice_id: int, dual_info: dict, ui_group_id: int, reply_message: Optional[Message] = None):
-    """
-    Attempt to play audio_url into the linked channel (channel_voice_id)
-    and simultaneously play video_url into the group voice chat (group_voice_id).
-    UI/Now Playing is posted in the group (ui_group_id).
-    dual_info should contain keys: audio_url, video_url, title, thumbnail, duration, is_local (optional)
-    """
-    title = dual_info.get("title") or "Unknown"
-    audio_url = dual_info.get("audio_url")
-    video_url = dual_info.get("video_url") or audio_url
-    duration = dual_info.get("duration")
-    thumb = dual_info.get("thumbnail")
-    # Start audio in channel (no UI by default)
-    audio_entry = {
-        "title": title,
-        "stream_url": audio_url,
-        "webpage": dual_info.get("webpage_url"),
-        "thumbnail": thumb,
-        "duration": duration,
-        "is_local": dual_info.get("is_local", False),
-    }
-    # Start video in group (this will post UI in group)
-    video_entry = {
-        "title": title,
-        "stream_url": video_url,
-        "webpage": dual_info.get("webpage_url"),
-        "thumbnail": thumb,
-        "duration": duration,
-        "is_local": dual_info.get("is_local", False),
-    }
-
-    # Ensure queues exist
-    if channel_voice_id not in radio_queue:
-        radio_queue[channel_voice_id] = []
-    if group_voice_id not in radio_queue:
-        radio_queue[group_voice_id] = []
-
-    # If either is currently playing and not paused, queue instead
-    ch_state = radio_state.get(channel_voice_id)
-    gp_state = radio_state.get(group_voice_id)
-
-    # If channel busy, queue audio on channel
-    if ch_state and not ch_state.get("paused"):
-        radio_queue[channel_voice_id].append(audio_entry)
-        log_event_sync("dual_cplay_audio_queued", {"channel": channel_voice_id, "title": title})
-        ch_queued = True
-    else:
-        ch_queued = False
-
-    # If group busy, queue video on group
-    if gp_state and not gp_state.get("paused"):
-        radio_queue[group_voice_id].append(video_entry)
-        log_event_sync("dual_cplay_video_queued", {"group": group_voice_id, "title": title})
-        gp_queued = True
-    else:
-        gp_queued = False
-
-    # Start audio in channel immediately if not queued
-    audio_ok = False
-    if not ch_queued:
-        if audio_url:
-            audio_ok = await _start_stream_in_call(channel_voice_id, audio_url)
-            if audio_ok:
-                # store state for channel (no UI message)
-                store_play_state(channel_voice_id, ui_group_id, title, audio_url, 0, time.time(), elapsed=0.0, paused=False, duration=duration)
-                log_event_sync("dual_cplay_audio_started", {"channel": channel_voice_id, "title": title})
-        else:
-            logging.debug("play_dual: no audio_url available")
-
-    # Start video in group immediately if not queued
-    video_ok = False
-    video_msg_id = 0
-    if not gp_queued:
-        if video_url:
-            started = await _start_stream_in_call(group_voice_id, video_url)
-            if not started:
-                logging.debug("play_dual: failed to start video in group, attempting to rollback audio")
-                # If video failed but audio started, we leave both to avoid awkward state. Caller may handle cleanup.
-            else:
-                # Post UI message in group
-                thumb_path = None
-                if thumb and isinstance(thumb, str) and thumb.startswith("http"):
-                    thumb_path = await get_thumb_from_url_or_webpage(thumb, dual_info.get("webpage_url"), title)
-                elif thumb and isinstance(thumb, str) and os.path.isfile(thumb):
-                    thumb_path = thumb
-                caption = f"🎧 {t(ui_group_id, 'NOW_PLAYING', title=title)}"
-                try:
-                    if thumb_path and os.path.isfile(thumb_path):
-                        msg = await bot.send_photo(
-                            ui_group_id,
-                            photo=thumb_path,
-                            caption=caption,
-                            reply_markup=player_controls_markup(ui_group_id),
-                        )
-                    else:
-                        msg = await bot.send_photo(
-                            ui_group_id,
-                            photo="https://files.catbox.moe/08qhi9.jpg",
-                            caption=caption,
-                            reply_markup=player_controls_markup(ui_group_id),
-                        )
-                except Exception:
-                    try:
-                        msg = await bot.send_message(ui_group_id, caption, reply_markup=player_controls_markup(ui_group_id))
-                    except Exception:
-                        msg = None
-                msg_id = msg.id if msg else 0
-                store_play_state(group_voice_id, ui_group_id, title, video_url, msg_id, time.time(), elapsed=0.0, paused=False, duration=duration)
-                # Start timer and track watcher for group (video)
-                if msg_id:
-                    radio_tasks[group_voice_id] = asyncio.create_task(
-                        update_radio_timer(group_voice_id, ui_group_id, msg_id, title, time.time(), duration or DEFAULT_FALLBACK_DURATION)
-                    )
-                if group_voice_id in track_watchers:
-                    try:
-                        track_watchers[group_voice_id].cancel()
-                    except Exception:
-                        pass
-                track_watchers[group_voice_id] = asyncio.create_task(track_watcher(group_voice_id, duration or DEFAULT_FALLBACK_DURATION, msg_id))
-                video_ok = True
-                log_event_sync("dual_cplay_video_started", {"group": group_voice_id, "title": title})
-        else:
-            logging.debug("play_dual: no video_url available")
-
-    return {"audio_started": audio_ok, "video_started": video_ok, "audio_queued": ch_queued, "video_queued": gp_queued}
-
 # ---------- /play ----------
 @bot.on_message(filters.group & filters.command(["play", "p"]))
 async def cmd_play(_, message: Message):
@@ -1767,27 +1567,20 @@ async def cmd_cplay(_, message: Message):
         logging.debug(f"Failed to resolve linked channel identifier {channel_ident}: {e}")
         return await message.reply_text("Failed to resolve linked channel. Ensure the channel exists and the bot has access.")
 
-    # ensure assistant present in target channel AND in group
+    # ensure assistant present in target channel
     try:
         assistant_user = await assistant.get_me()
         assistant_id = assistant_user.id
     except Exception:
         assistant_id = None
-    assistant_present_in_channel = False
-    assistant_present_in_group = False
+    assistant_present = False
     if assistant_id:
         try:
             await assistant.get_chat_member(voice_chat_id, assistant_id)
-            assistant_present_in_channel = True
+            assistant_present = True
         except RPCError:
-            assistant_present_in_channel = False
-        try:
-            await assistant.get_chat_member(group_id, assistant_id)
-            assistant_present_in_group = True
-        except RPCError:
-            assistant_present_in_group = False
-
-    if not assistant_present_in_channel:
+            assistant_present = False
+    if not assistant_present:
         invite_link = None
         try:
             invite = await bot.create_chat_invite_link(voice_chat_id, member_limit=1, name="DLK BOT assistant")
@@ -1797,14 +1590,14 @@ async def cmd_cplay(_, message: Message):
         if invite_link:
             try:
                 await assistant.join_chat(invite_link)
-                assistant_present_in_channel = True
+                assistant_present = True
                 try:
                     await bot.send_message(group_id, t(group_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
                 except Exception:
                     pass
             except Exception:
                 pass
-        if not assistant_present_in_channel:
+        if not assistant_present:
             kb = None
             if invite_link:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
@@ -1817,26 +1610,6 @@ async def cmd_cplay(_, message: Message):
                     "Assistant is not present in the linked channel. Please add the assistant account to the channel and give it permission to manage voice chats and speak."
                 )
             return
-
-    # if assistant missing in group, try to invite as well (the command group)
-    if not assistant_present_in_group:
-        if ASSISTANT_SESSION:
-            try:
-                invite = await bot.create_chat_invite_link(group_id, member_limit=1, name="DLK BOT assistant")
-                invite_link = invite.invite_link
-                try:
-                    await assistant.join_chat(invite_link)
-                    assistant_present_in_group = True
-                except Exception:
-                    pass
-            except Exception:
-                pass
-        if not assistant_present_in_group:
-            # Not fatal, but warn user — playing video into group may fail if assistant can't join group voice chat
-            try:
-                await message.reply_text("Warning: assistant not present in this group. Some group-side playback features may not work until assistant is added.")
-            except Exception:
-                pass
 
     entry = None
     info_msg = None
@@ -1866,32 +1639,6 @@ async def cmd_cplay(_, message: Message):
             "is_local": False,
         }
 
-    # If it's a YouTube link (or resolvable), try to extract audio+video and perform dual-play:
-    webpage = entry.get("webpage")
-    yt_id = get_youtube_id(webpage) if webpage else None
-    used_dual = False
-    if not entry.get("is_local") and (yt_id or (webpage and "youtube" in (webpage or ""))):
-        try:
-            dual = extract_audio_video_urls(webpage or entry.get("stream_url") or "")
-            if dual and dual.get("audio_url") and dual.get("video_url"):
-                # prefer to show UI in the group (the group that linked this channel)
-                ui_chat_for_ui = group_id
-                # call play_dual
-                result = await play_dual(voice_chat_id, group_id, dual, ui_chat_for_ui, reply_message=message)
-                used_dual = True
-                if result.get("audio_started") or result.get("video_started"):
-                    if info_msg:
-                        try:
-                            await info_msg.edit_text("Started playing: audio in channel, video in group (if supported).")
-                        except Exception:
-                            pass
-                    await message.reply_text(f"Started playing in linked channel (audio) and group (video) for: {dual.get('title')}")
-                    log_event_sync("cplay_dual_started", {"group_id": group_id, "channel": voice_chat_id, "title": dual.get("title"), "by": message.from_user.id})
-                    return
-        except Exception as e:
-            logging.debug(f"Dual-play attempt failed: {e}")
-
-    # Fallback: normal single-play into linked channel (audio only)
     if voice_chat_id not in radio_queue:
         radio_queue[voice_chat_id] = []
     current_state = radio_state.get(voice_chat_id)
