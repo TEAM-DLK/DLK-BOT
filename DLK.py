@@ -1365,7 +1365,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
             else:
                 msg = await bot.send_photo(
                     ui_chat,
-                    photo="https://files.catbox.moe/3o9qj5.jpg",
+                    photo="https://files.catbox.moe/08qhi9.jpg",
                     caption=caption,
                     reply_markup=player_controls_markup(ui_chat),
                 )
