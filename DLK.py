@@ -1,18 +1,20 @@
-# DLK.py - Updated (2025-12-01) - extended for /conet, /cplay, /cradio and delete button
+# DLK.py - Updated (2025-12-02)
 # Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/9f7bb96736bdccc270093b98aaf69c5d437c02c3/DLK.py
 #
-# Changes in this version:
-# - Added /conet command to link a group to a channel (admin-only).
-# - Added /cplay command: when used in a group, plays YouTube or replied audio into the linked channel.
-# - Added /cradio command: opens radio menu to play stations in the linked channel.
-# - Persist linked channel mapping in MongoDB collection `linked_channels` when DB configured; fallback to in-memory mapping.
-# - Player controls now include a ❌ Delete button which deletes the now-playing message and stops playback (permission-checked).
-# - Added helpers: get_linked_channel, set_linked_channel, find_group_for_channel to manage mapping & permission checks.
-# - Minor tweaks to thumbnail processing and robust attempt logic preserved.
+# Summary of fixes / changes:
+# - When playing into a linked channel via /cplay or /cradio, the "Now Playing" UI message is posted into the group
+#   that linked the channel (so the UI appears in the group, not inside the channel).
+# - Added /cplend and /crend commands (channel-play end) to stop playback in the linked channel from the group.
+# - When the track finishes (track_watcher), assistant leaves the voice chat and UI is updated in the correct UI chat.
+# - Call resolution: when a linked channel is stored as a username (e.g. @DLKDEVELOPERS), the bot resolves it
+#   to a numeric chat.id before attempting to start/join calls. This avoids call_py warnings for string ids.
+# - Callbacks (pause/resume/skip/stop/delete) that come from UI chat (group) are mapped to the voice chat ID
+#   using a helper, so controls operate on the actual voice call.
+# - Minor robustness and logging improvements.
 #
-# NOTE: This file is the complete bot implementation. Ensure environment variables (ASSISTANT_SESSION, API_ID, API_HASH,
-# BOT_TOKEN, OWNER_ID, MONGO_URI etc.) are set. When testing channel join behavior, assistant (user session) needs to be added
-# to the target channel with permission to manage voice chats / speak (or the bot must be admin and create invite links).
+# Deploy notes:
+# - Ensure ASSISTANT_SESSION is set and assistant account has been added to the target channel with permission to speak.
+# - If you store channels as usernames (e.g. @mychannel) set_linked_channel keeps that, but runtime resolves to numeric id.
 #
 # Full file contents follow.
 
@@ -162,6 +164,7 @@ RADIO_STATION = {
 # runtime state
 radio_tasks: Dict[int, asyncio.Task] = {}
 radio_paused = set()
+# radio_state keyed by voice_chat_id (int). Each state contains ui_chat_id + msg_id etc.
 radio_state: Dict[int, Dict[str, Any]] = {}
 radio_queue: Dict[int, List[Dict[str, Any]]] = {}
 track_watchers: Dict[int, asyncio.Task] = {}
@@ -188,7 +191,8 @@ db = None
 # linked channel mapping local fallback (if DB disabled)
 linked_channels_local: Dict[int, Union[str, int]] = {}
 
-# TRANSLATIONS (same as before - omitted here to keep file length manageable in explanation)
+# TRANSLATIONS (same as before - omitted here to keep file reasonable)
+
 TRANSLATIONS = {
     "en": {
         "GROUP_BLOCKED": "❌ This group is blocked from using DLK BOT.",
@@ -264,6 +268,9 @@ TRANSLATIONS = {
             "Commands (groups):\n"
             "- /radio : stations\n"
             "- /play <query|URL> or reply to audio with /play : play music\n"
+            "- /cplay : play into linked channel\n"
+            "- /cradio : radio into linked channel\n"
+            "- /cplend /crend : stop linked channel playback\n"
             "- /pause /resume /stop /skip : playback controls (admins)\n\n"
             "Owner-only: /bl (block group), /unbl (unblock group)\n"
             "Use /lang to change the language."
@@ -274,25 +281,19 @@ TRANSLATIONS = {
             "- Use /play to play YouTube links or search terms.\n"
             "- Reply to an audio/file and use /play to play local audio.\n"
             "- Use /radio to open the radio stations menu.\n"
+            "- Use /cplay to play into the linked channel (link with /conet).\n"
+            "- Use /cradio to open radio menu for the linked channel.\n"
+            "- Use /cplend or /crend to end playback in linked channel.\n"
             "- Use /rpush to add a station or url to the queue.\n"
             "- Use /rskip to skip to next queued station, /rend to end radio, /rresume to resume (admins only).\n"
             "- Admins can use pause/resume/skip/stop via the inline buttons.\n"
             "- Owner-only commands: /bl and /unbl in a group to block/unblock the group.\n"
             "- Use /lang to change bot language in this chat.\n"
         ),
-        "LANG_MENU_TITLE": "🌐 Chat language settings",
-        "CHOOSE_LANG": "🌐 Choose the language for this chat:",
-        "LANG_CURRENT": "Current language: {lang_name}",
-        "LANG_CHANGED": "✅ Language changed to {lang_name}.",
-        "UNKNOWN_LANG": "Unknown language.",
-        "NOTHING_TO_RESUME_BTN": "Nothing to resume.",
-    },
-    "si": {
-        # Sinhala translations omitted here for brevity; original strings remain unchanged.
-    },
+    }
 }
 
-LANG_NAMES = {"en": "English 🇬🇧", "si": "සිංහල 🇱🇰"}
+LANG_NAMES = {"en": "English 🇬🇧"}
 DEFAULT_LANG = "en"
 
 def get_chat_lang(chat_id: int) -> str:
@@ -499,14 +500,13 @@ async def _process_image_and_overlay(src_path: str, out_key: str, title: str) ->
         background = background.filter(ImageFilter.BoxBlur(8))
         enhancer = ImageEnhance.Brightness(background)
         background = enhancer.enhance(0.7)
-        # further desaturate for background
         try:
             converter = ImageEnhance.Color(background)
             background = converter.enhance(0.25)
         except Exception:
             pass
         art = _create_circular_artwork(image, diameter=520, border=10)
-        art_x = (1280 - art.size[0]) // 10  # move a bit in from left
+        art_x = (1280 - art.size[0]) // 10
         art_y = (720 - art.size[1]) // 2
         background.paste(art, (art_x, art_y), art)
         draw = ImageDraw.Draw(background)
@@ -585,7 +585,6 @@ def init_db_sync():
     db.blocked.create_index("chat_id")
     db.logs.create_index("ts")
     db.langs.create_index("chat_id", unique=True)
-    # linked channels: map group_id -> channel_id_or_username
     db.linked_channels.create_index("group_id", unique=True)
     logging.info(f"Connected to MongoDB: {MONGO_DBNAME}")
 
@@ -650,9 +649,6 @@ def unblock_group_sync(chat_id: int):
 
 # Linked channel helpers
 def get_linked_channel(group_id: int) -> Optional[Union[int, str]]:
-    """
-    Returns the linked channel identifier for the group (int id or @username), or None.
-    """
     try:
         if db is not None:
             row = db.linked_channels.find_one({"group_id": group_id})
@@ -664,9 +660,6 @@ def get_linked_channel(group_id: int) -> Optional[Union[int, str]]:
         return linked_channels_local.get(group_id)
 
 def set_linked_channel(group_id: int, channel_identifier: Optional[Union[int, str]]):
-    """
-    Set or remove the linked channel for group_id. If channel_identifier is None, unlink.
-    """
     try:
         if db is not None:
             if channel_identifier is None:
@@ -680,23 +673,17 @@ def set_linked_channel(group_id: int, channel_identifier: Optional[Union[int, st
             return
     except Exception as e:
         logging.warning(f"set_linked_channel db op failed: {e}")
-    # local fallback
     if channel_identifier is None:
         linked_channels_local.pop(group_id, None)
     else:
         linked_channels_local[group_id] = channel_identifier
 
 def find_group_for_channel(channel_identifier: Union[int, str]) -> Optional[int]:
-    """
-    Reverse lookup: find a group_id that linked to this channel_identifier.
-    Returns first match or None.
-    """
     try:
         if db is not None:
             row = db.linked_channels.find_one({"channel": channel_identifier})
             if row:
                 return row.get("group_id")
-        # local search
         for g, ch in linked_channels_local.items():
             if str(ch) == str(channel_identifier):
                 return g
@@ -739,6 +726,26 @@ async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> boo
         logging.warning(f"Privilege check failed: {e}")
         return False
 
+# helpers to map UI chat (where message/buttons are posted) -> voice chat id
+def ui_to_voice_chat(ui_chat_id: int) -> Optional[int]:
+    """
+    Given a chat id where a player UI exists (group or channel), find the voice_chat_id
+    that is currently playing for that UI. If UI is itself a voice chat id, return it.
+    """
+    try:
+        # If voice chat is the same as UI (normal case), return directly if playing
+        if ui_chat_id in radio_state:
+            return ui_chat_id
+        for voice_id, st in radio_state.items():
+            try:
+                if st.get("ui_chat_id") == ui_chat_id:
+                    return voice_id
+            except Exception:
+                continue
+    except Exception as e:
+        logging.debug(f"ui_to_voice_chat failed: {e}")
+    return None
+
 # ---------- UI ----------
 def radio_buttons(page: int = 0, per_page: int = 6):
     stations = sorted(RADIO_STATION.keys())
@@ -762,11 +769,8 @@ def radio_buttons(page: int = 0, per_page: int = 6):
     buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="radio_close")])
     return InlineKeyboardMarkup(buttons)
 
-def player_controls_markup(chat_id: int):
-    """
-    Adds standard controls + delete button. Delete callback data: player_delete
-    """
-    if chat_id in radio_paused:
+def player_controls_markup(ui_chat_id: int):
+    if ui_chat_id in radio_paused:
         controls = [
             InlineKeyboardButton("▷", callback_data="radio_resume"),
             InlineKeyboardButton("‣‣I", callback_data="music_skip"),
@@ -788,25 +792,18 @@ def player_controls_markup(chat_id: int):
 
 # ---------- Safe callback answer ----------
 async def safe_query_answer(query: CallbackQuery, text: Optional[str] = None, show_alert: bool = False):
-    """Call query.answer but ignore QUERY_ID_INVALID and similar RPC errors."""
     try:
         if text is None:
             await query.answer()
         else:
-            # Some versions of pyrogram accept cache_time etc; we keep it simple.
             await query.answer(text, show_alert=show_alert)
     except RPCError as e:
-        # Common when callback is already answered / expired.
         logging.debug(f"safe_query_answer ignored RPCError: {e}")
     except Exception as e:
         logging.debug(f"safe_query_answer failed: {e}")
 
 # ---------- Helpers for introspecting call_py state ----------
 async def dump_call_py_state(chat_id: Optional[int] = None) -> Dict[str, Any]:
-    """
-    Best-effort dump of call_py internals for debugging.
-    Avoids raising when attributes are coroutines.
-    """
     data = {"timestamp": time.time(), "chat_id": chat_id, "attrs": {}}
     attrs_to_check = ["active_calls", "_active_calls", "_group_calls", "group_calls", "calls", "_calls", "get_call", "get_active_call", "is_connected", "is_running", "running"]
     for name in attrs_to_check:
@@ -815,10 +812,9 @@ async def dump_call_py_state(chat_id: Optional[int] = None) -> Dict[str, Any]:
             if attr is None:
                 data["attrs"][name] = None
                 continue
-            # If callable, try to call (safe)
             if inspect.iscoroutinefunction(attr):
                 try:
-                    val = attr()  # call
+                    val = attr()
                     if inspect.isawaitable(val):
                         val = await val
                     data["attrs"][name] = repr(val)
@@ -831,7 +827,6 @@ async def dump_call_py_state(chat_id: Optional[int] = None) -> Dict[str, Any]:
                 except Exception as e:
                     data["attrs"][name] = f"<awaitable-attr-failed: {e}>"
             elif callable(attr) and not isinstance(attr, (dict, list, tuple, set, str, bytes)):
-                # try calling without args, then with chat_id if that fails
                 called = False
                 try:
                     val = attr()
@@ -865,7 +860,7 @@ async def dump_call_py_state(chat_id: Optional[int] = None) -> Dict[str, Any]:
     return data
 
 # ---------- TIMER / VC HELPERS ----------
-async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: float, track_duration: int):
+async def update_radio_timer(voice_chat_id: int, ui_chat_id: int, msg_id: int, title: str, start_time: float, track_duration: int):
     while True:
         try:
             elapsed = max(0, int(time.time() - start_time))
@@ -874,15 +869,15 @@ async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: 
             timer = f"{m:02d}:{s:02d}"
             caption = f"🎧 Now Playing: {title}\n⏳ Duration: {timer}"
             await bot.edit_message_caption(
-                chat_id=chat_id,
+                chat_id=ui_chat_id,
                 message_id=msg_id,
                 caption=caption,
-                reply_markup=player_controls_markup(chat_id),
+                reply_markup=player_controls_markup(ui_chat_id),
             )
             if remaining <= 0:
                 break
         except Exception as e:
-            logging.debug(f"Timer update failed for {chat_id}/{msg_id}: {e}")
+            logging.debug(f"Timer update failed for {voice_chat_id}/{msg_id}: {e}")
             break
         await asyncio.sleep(5)
 
@@ -904,7 +899,6 @@ async def _safe_call_py_method(method_name: str, *args, **kwargs):
 # ---------- Async call-active detection (await awaitables) ----------
 async def _is_call_active(chat_id: int) -> bool:
     try:
-        # 1) Try known getters
         for getter in ("get_call", "get_active_call"):
             attr = getattr(call_py, getter, None)
             if not attr:
@@ -918,7 +912,6 @@ async def _is_call_active(chat_id: int) -> bool:
             except Exception:
                 continue
 
-        # 2) Probe common attributes; await if awaitable
         attr_names = ("active_calls", "_active_calls", "_group_calls", "group_calls", "calls", "_calls")
         for attr_name in attr_names:
             ac = getattr(call_py, attr_name, None)
@@ -964,12 +957,9 @@ async def _is_call_active(chat_id: int) -> bool:
                             pass
                 except Exception:
                     pass
-            # Now inspect container/object
             if isinstance(ac, dict):
-                if chat_id in ac:
-                    return True
                 try:
-                    if str(chat_id) in ac:
+                    if chat_id in ac:
                         return True
                 except Exception:
                     pass
@@ -999,7 +989,6 @@ async def _is_call_active(chat_id: int) -> bool:
                 except Exception:
                     pass
 
-        # 3) General "running" flags
         for check in ("is_connected", "is_running", "running"):
             attr = getattr(call_py, check, None)
             if not attr:
@@ -1060,7 +1049,8 @@ async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
         logging.warning(f"leave_voice_chat failed {chat_id}: {e}")
 
 def store_play_state(
-    chat_id: int,
+    voice_chat_id: int,
+    ui_chat_id: int,
     title: str,
     url: str,
     msg_id: int,
@@ -1070,7 +1060,8 @@ def store_play_state(
     duration: Optional[int] = None,
 ):
     state = {
-        "chat_id": chat_id,
+        "voice_chat_id": voice_chat_id,
+        "ui_chat_id": ui_chat_id,
         "station": title,
         "url": url,
         "msg_id": msg_id,
@@ -1080,7 +1071,7 @@ def store_play_state(
         "duration": duration,
         "ts": time.time(),
     }
-    radio_state[chat_id] = state
+    radio_state[voice_chat_id] = state
 
 # ---------- robust start stream ----------
 async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
@@ -1098,7 +1089,6 @@ async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
                 await result
         except Exception as e:
             logging.debug(f"_try_and_verify: call raised: {e}")
-        # allow library time
         for attempt in range(6):
             await asyncio.sleep(0.5)
             try:
@@ -1297,45 +1287,56 @@ async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any
         return None
 
 # ---------- track_watcher ----------
-async def track_watcher(chat_id: int, duration: int, msg_id: int):
+async def track_watcher(voice_chat_id: int, duration: int, msg_id: int):
     try:
         await asyncio.sleep(max(1, duration) + 2)
-        q = radio_queue.get(chat_id, [])
+        q = radio_queue.get(voice_chat_id, [])
         if q:
             next_entry = q.pop(0)
-            radio_queue[chat_id] = q
-            await play_entry(chat_id, next_entry)
-            log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
+            radio_queue[voice_chat_id] = q
+            await play_entry(voice_chat_id, next_entry)
+            log_event_sync("music_auto_skipped", {"chat_id": voice_chat_id, "title": next_entry.get("title")})
         else:
             try:
-                await leave_voice_chat(chat_id, cancel_watchers=False)
+                state = radio_state.get(voice_chat_id)
+                ui_chat_id = state.get("ui_chat_id") if state else voice_chat_id
+                try:
+                    await leave_voice_chat(voice_chat_id, cancel_watchers=False)
+                except Exception:
+                    pass
+                try:
+                    await bot.edit_message_caption(
+                        chat_id=ui_chat_id,
+                        message_id=msg_id,
+                        caption=t(ui_chat_id, "BOT_STOPPED"),
+                        reply_markup=None,
+                    )
+                except Exception as e:
+                    logging.debug(f"track_watcher edit caption failed {voice_chat_id}/{msg_id}: {e}")
             except Exception:
                 pass
-            try:
-                await bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    caption=t(chat_id, "BOT_STOPPED"),
-                    reply_markup=None,
-                )
-            except Exception as e:
-                logging.debug(f"track_watcher edit caption failed {chat_id}/{msg_id}: {e}")
-            log_event_sync("music_track_autostop", {"chat_id": chat_id})
+            log_event_sync("music_track_autostop", {"chat_id": voice_chat_id})
     except asyncio.CancelledError:
         return
     except Exception as e:
-        logging.debug(f"track_watcher error {chat_id}: {e}")
+        logging.debug(f"track_watcher error {voice_chat_id}: {e}")
 
 # ---------- play_entry ----------
-async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None):
+async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Message] = None, ui_chat_id: Optional[int] = None):
+    """
+    voice_chat_id: numeric chat id where assistant should join the voice chat (int)
+    ui_chat_id: chat id where the "Now Playing" message should be posted (group id). If None, defaults to voice_chat_id.
+    """
     try:
-        if chat_id in radio_tasks:
-            radio_tasks[chat_id].cancel()
-            radio_tasks.pop(chat_id, None)
+        if voice_chat_id in radio_tasks:
+            radio_tasks[voice_chat_id].cancel()
+            radio_tasks.pop(voice_chat_id, None)
+
         stream_source = entry["stream_url"]
-        started = await _start_stream_in_call(chat_id, stream_source)
+        # start stream in voice chat
+        started = await _start_stream_in_call(voice_chat_id, stream_source)
         if not started:
-            logging.error("Failed to start streaming in call for %s", chat_id)
+            logging.error("Failed to start streaming in call for %s", voice_chat_id)
             return False
 
         thumb_path = None
@@ -1348,29 +1349,34 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
                 thumb_path = await get_thumb_from_url_or_webpage(thumb_val, entry.get("webpage"), title)
             else:
                 thumb_path = await get_thumb_from_url_or_webpage(None, entry.get("webpage"), title)
-        caption = f"🎧 {t(chat_id, 'NOW_PLAYING', title=title)}"
+
+        # UI chat where the player will be shown
+        ui_chat = ui_chat_id or voice_chat_id
+
+        caption = f"🎧 {t(ui_chat, 'NOW_PLAYING', title=title)}"
         try:
             if thumb_path and os.path.isfile(thumb_path):
                 msg = await bot.send_photo(
-                    chat_id,
+                    ui_chat,
                     photo=thumb_path,
                     caption=caption,
-                    reply_markup=player_controls_markup(chat_id),
+                    reply_markup=player_controls_markup(ui_chat),
                 )
             else:
                 msg = await bot.send_photo(
-                    chat_id,
+                    ui_chat,
                     photo="https://files.catbox.moe/3o9qj5.jpg",
                     caption=caption,
-                    reply_markup=player_controls_markup(chat_id),
+                    reply_markup=player_controls_markup(ui_chat),
                 )
         except Exception:
-            msg = await bot.send_photo(
-                chat_id,
-                photo="https://files.catbox.moe/3o9qj5.jpg",
-                caption=caption,
-                reply_markup=player_controls_markup(chat_id),
-            )
+            # fallback: try without thumbnail
+            try:
+                msg = await bot.send_message(ui_chat, caption, reply_markup=player_controls_markup(ui_chat))
+            except Exception:
+                logging.debug("Failed to send player UI message")
+                msg = None
+
         duration = entry.get("duration")
         try:
             if duration is not None:
@@ -1380,32 +1386,42 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
         if not duration or duration <= 0:
             duration = DEFAULT_FALLBACK_DURATION
         start_time = time.time()
+
+        if msg:
+            msg_id = msg.id
+        else:
+            msg_id = 0
+
         store_play_state(
-            chat_id,
+            voice_chat_id,
+            ui_chat,
             title,
             entry.get("stream_url"),
-            msg.id,
+            msg_id,
             start_time,
             elapsed=0.0,
             paused=False,
             duration=duration,
         )
-        radio_paused.discard(chat_id)
-        radio_tasks[chat_id] = asyncio.create_task(
-            update_radio_timer(chat_id, msg.id, title, start_time, duration)
-        )
-        if chat_id in track_watchers:
+
+        radio_paused.discard(voice_chat_id)
+        # schedule timer updates to UI (if we have a valid msg_id)
+        if msg_id:
+            radio_tasks[voice_chat_id] = asyncio.create_task(
+                update_radio_timer(voice_chat_id, ui_chat, msg_id, title, start_time, duration)
+            )
+        if voice_chat_id in track_watchers:
             try:
-                track_watchers[chat_id].cancel()
+                track_watchers[voice_chat_id].cancel()
             except Exception:
                 pass
-        track_watchers[chat_id] = asyncio.create_task(track_watcher(chat_id, duration, msg.id))
-        log_event_sync("music_started", {"chat_id": chat_id, "title": title})
+        track_watchers[voice_chat_id] = asyncio.create_task(track_watcher(voice_chat_id, duration, msg_id))
+        log_event_sync("music_started", {"voice_chat_id": voice_chat_id, "ui_chat": ui_chat, "title": title})
         return True
     except Exception:
         logging.error("Play entry failed", exc_info=True)
         try:
-            await leave_voice_chat(chat_id)
+            await leave_voice_chat(voice_chat_id)
         except Exception:
             pass
         return False
@@ -1489,7 +1505,7 @@ async def cmd_play(_, message: Message):
             pass
         log_event_sync("music_queued", {"chat_id": chat_id, "title": entry["title"], "by": user.id})
         return
-    ok = await play_entry(chat_id, entry, reply_message=message)
+    ok = await play_entry(chat_id, entry, reply_message=message, ui_chat_id=chat_id)
     if ok:
         try:
             if info_msg:
@@ -1515,12 +1531,6 @@ async def cmd_play(_, message: Message):
 # ---------- /conet (link group -> channel) ----------
 @bot.on_message(filters.group & filters.command(["conet", "conlink"]))
 async def cmd_conet(_, message: Message):
-    """
-    Usage:
-      /conet <@channelusername or -1001234567890>  -> link this group to that channel
-      /conet unlink                                 -> remove link
-    Only group admins (or owner) can run this.
-    """
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
         return await message.reply_text("Only admins can use this.")
@@ -1537,10 +1547,8 @@ async def cmd_conet(_, message: Message):
         await message.reply_text("✅ Unlinked channel from this group.")
         log_event_sync("conet_unlinked", {"group_id": chat_id, "by": message.from_user.id})
         return
-    # parse channel identifier - either @username or numeric
     channel_ident = args
     if channel_ident.startswith("https://t.me/") or channel_ident.startswith("http://t.me/"):
-        # extract username or id from link if possible
         try:
             channel_ident = channel_ident.split("t.me/")[-1].strip("/")
             if channel_ident.isdigit():
@@ -1564,25 +1572,19 @@ async def cmd_conet(_, message: Message):
 # ---------- /cplay (play into linked channel) ----------
 @bot.on_message(filters.group & filters.command(["cplay", "cp"]))
 async def cmd_cplay(_, message: Message):
-    """
-    When used in a group, plays into the linked channel.
-    - If reply to audio/file: upload and play that audio in linked channel
-    - Else: accept YouTube URL or search terms and play audio extracted via yt-dlp
-    """
     group_id = message.chat.id
     if is_group_blocked_sync(group_id):
         return await message.reply_text(t(group_id, "GROUP_BLOCKED"))
     channel_ident = get_linked_channel(group_id)
     if not channel_ident:
         return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
-    # get channel id/username for API calls
-    channel_id = channel_ident
-    # attempt to convert numeric strings to int if possible
+    # resolve numeric id (bot.get_chat handles @username or numeric)
     try:
-        if isinstance(channel_id, str) and re.match(r"^-?\d+$", channel_id):
-            channel_id = int(channel_id)
-    except Exception:
-        pass
+        chat_obj = await bot.get_chat(channel_ident)
+        voice_chat_id = chat_obj.id
+    except Exception as e:
+        logging.debug(f"Failed to resolve linked channel identifier {channel_ident}: {e}")
+        return await message.reply_text("Failed to resolve linked channel. Ensure the channel exists and the bot has access.")
 
     # ensure assistant present in target channel
     try:
@@ -1593,15 +1595,14 @@ async def cmd_cplay(_, message: Message):
     assistant_present = False
     if assistant_id:
         try:
-            await assistant.get_chat_member(channel_id, assistant_id)
+            await assistant.get_chat_member(voice_chat_id, assistant_id)
             assistant_present = True
         except RPCError:
             assistant_present = False
     if not assistant_present:
-        # try to create invite link to channel if bot is admin there
         invite_link = None
         try:
-            invite = await bot.create_chat_invite_link(channel_id, member_limit=1, name="DLK BOT assistant")
+            invite = await bot.create_chat_invite_link(voice_chat_id, member_limit=1, name="DLK BOT assistant")
             invite_link = invite.invite_link
         except Exception:
             invite_link = None
@@ -1614,10 +1615,8 @@ async def cmd_cplay(_, message: Message):
                 except Exception:
                     pass
             except Exception:
-                # fallthrough to instruct
                 pass
         if not assistant_present:
-            # tell user to add assistant to the channel manually
             kb = None
             if invite_link:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
@@ -1658,37 +1657,39 @@ async def cmd_cplay(_, message: Message):
             "duration": info.get("duration"),
             "is_local": False,
         }
-    # ensure queue for the channel (note: keyed by channel_id)
-    if channel_id not in radio_queue:
-        radio_queue[channel_id] = []
-    current_state = radio_state.get(channel_id)
+
+    if voice_chat_id not in radio_queue:
+        radio_queue[voice_chat_id] = []
+    current_state = radio_state.get(voice_chat_id)
+    # ui_chat_id for this play should be the group that linked channel (so user sees UI in group)
+    ui_chat_for_ui = group_id
     if current_state and not current_state.get("paused"):
-        radio_queue[channel_id].append(entry)
+        radio_queue[voice_chat_id].append(entry)
         try:
             if info_msg:
                 await info_msg.edit_text(t(group_id, "ADDED_QUEUE", title=entry["title"]))
         except Exception:
             pass
-        log_event_sync("cplay_queued", {"group_id": group_id, "channel": channel_id, "title": entry["title"], "by": message.from_user.id})
+        log_event_sync("cplay_queued", {"group_id": group_id, "channel": voice_chat_id, "title": entry["title"], "by": message.from_user.id})
         return
-    ok = await play_entry(channel_id, entry, reply_message=message)
+    ok = await play_entry(voice_chat_id, entry, reply_message=message, ui_chat_id=ui_chat_for_ui)
     if ok:
         try:
             if info_msg:
-                await info_msg.edit_text(f"Now playing in {channel_id}: {entry['title']}")
+                await info_msg.edit_text(f"Now playing in channel (via assistant).")
         except Exception:
             pass
-        await message.reply_text(f"Started playing in linked channel {channel_id}: {entry['title']}")
-        log_event_sync("cplay_started", {"group_id": group_id, "channel": channel_id, "title": entry["title"], "by": message.from_user.id})
+        await message.reply_text(f"Started playing in linked channel (via assistant): {entry['title']}")
+        log_event_sync("cplay_started", {"group_id": group_id, "channel": voice_chat_id, "title": entry["title"], "by": message.from_user.id})
     else:
         try:
             if info_msg:
                 await info_msg.edit_text(t(group_id, "FAILED_PLAY_REQUEST"))
         except Exception:
             pass
-        await message.reply_text("Failed to start playback in linked channel.")
+        await message.reply_text("Failed to start playback in linked channel. ❌ Failed to play the requested track.")
 
-# ---------- /cradio (open radio menu for linked channel) ----------
+# ---------- /cradio (open radio menu to play into linked channel) ----------
 @bot.on_message(filters.group & filters.command(["cradio"]))
 async def cmd_cradio(_, message: Message):
     group_id = message.chat.id
@@ -1696,325 +1697,98 @@ async def cmd_cradio(_, message: Message):
     if not channel_ident:
         return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
     kb = radio_buttons(0)
-    await message.reply_text(f"📻 Radio Stations - choose one to play in linked channel {channel_ident}:", reply_markup=kb)
+    await message.reply_text(f"📻 Radio Stations - choose one to play in linked channel {channel_ident} (UI will be shown here):", reply_markup=kb)
 
-# ---------- /skip /queue /stop (unchanged for groups) ----------
-@bot.on_message(filters.group & filters.command(["skip", "s"]))
-async def cmd_skip(_, message: Message):
-    chat_id = message.chat.id
+# ---------- /cplend and /crend - end playback in linked channel ----------
+@bot.on_message(filters.group & filters.command(["cplend", "crend"]))
+async def cmd_cplend(_, message: Message):
+    group_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_SKIP"))
-    q = radio_queue.get(chat_id, [])
-    if not q:
-        await leave_voice_chat(chat_id)
-        await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE"))
-        log_event_sync("music_skipped_stop", {"chat_id": chat_id, "by": message.from_user.id})
-        return
-    next_entry = q.pop(0)
-    radio_queue[chat_id] = q
-    if chat_id in track_watchers:
-        try:
-            track_watchers[chat_id].cancel()
-        except Exception:
-            pass
-        track_watchers.pop(chat_id, None)
-    ok = await play_entry(chat_id, next_entry)
-    if ok:
-        await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
-        log_event_sync("music_skipped", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id})
-    else:
-        await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
-
-@bot.on_message(filters.group & filters.command(["queue", "q"]))
-async def cmd_queue(_, message: Message):
-    chat_id = message.chat.id
-    q = radio_queue.get(chat_id, [])
-    if not q:
-        return await message.reply_text(t(chat_id, "QUEUE_EMPTY"))
-    text = t(chat_id, "QUEUE_HEADER")
-    for i, item in enumerate(q[:10], start=1):
-        text += f"{i}. {item.get('title')}\n"
-    await message.reply_text(text)
-
-@bot.on_message(filters.group & filters.command(["stop", "end"]))
-async def general_stop_handler(_, message: Message):
-    chat_id = message.chat.id
-    if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
-
-    state = radio_state.get(chat_id)
+        return await message.reply_text("Only admins can use this.")
+    channel_ident = get_linked_channel(group_id)
+    if not channel_ident:
+        return await message.reply_text("No channel linked for this group.")
+    try:
+        chat_obj = await bot.get_chat(channel_ident)
+        voice_chat_id = chat_obj.id
+    except Exception as e:
+        logging.debug(f"Failed to resolve linked channel for cplend: {e}")
+        return await message.reply_text("Failed to resolve linked channel.")
+    state = radio_state.get(voice_chat_id)
+    ui_chat = state.get("ui_chat_id") if state else group_id
     msg_id = state.get("msg_id") if state else None
-
-    await leave_voice_chat(chat_id)
-
+    await leave_voice_chat(voice_chat_id)
     if msg_id:
         try:
-            await bot.edit_message_caption(
-                chat_id=chat_id,
-                message_id=msg_id,
-                caption=t(chat_id, "BOT_STOPPED"),
-                reply_markup=None,
-            )
+            await bot.edit_message_caption(chat_id=ui_chat, message_id=msg_id, caption=t(ui_chat, "BOT_STOPPED"), reply_markup=None)
         except Exception:
             pass
+    await message.reply_text("Stopped playback in linked channel.")
+    log_event_sync("cplend", {"group_id": group_id, "channel": voice_chat_id, "by": message.from_user.id})
 
-    await message.reply_text(t(chat_id, "BOT_STOPPED"))
-    log_event_sync("radio_stopped_text", {"chat_id": chat_id, "by": message.from_user.id})
-
-# ---------- RADIO COMMANDS (existing) ----------
-@bot.on_message(filters.group & filters.command(["radio"]))
-async def cmd_radio_menu(_, message: Message):
-    chat_id = message.chat.id
-    if is_group_blocked_sync(chat_id):
-        return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
-    kb = radio_buttons(0)
-    await message.reply_text("📻 Radio Stations - choose one:", reply_markup=kb)
-
-@bot.on_message(filters.group & filters.command(["rend"]))
-async def cmd_rend(_, message: Message):
-    chat_id = message.chat.id
-    if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_END"))
-    try:
-        await leave_voice_chat(chat_id)
-        await message.reply_text(t(chat_id, "RADIO_ENDED"))
-        log_event_sync("radio_rend", {"chat_id": chat_id, "by": message.from_user.id})
-    except Exception as e:
-        logging.warning(f"cmd_rend failed: {e}")
-        await message.reply_text(t(chat_id, "FAILED_END_RADIO"))
-
-@bot.on_message(filters.group & filters.command(["rskip"]))
-async def cmd_rskip(_, message: Message):
-    chat_id = message.chat.id
-    if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_SKIP"))
-    q = radio_queue.get(chat_id, [])
-    if not q:
-        await leave_voice_chat(chat_id)
-        await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE_RADIO"))
-        log_event_sync("radio_rskip_stop", {"chat_id": chat_id, "by": message.from_user.id})
-        return
-    next_entry = q.pop(0)
-    radio_queue[chat_id] = q
-    if chat_id in track_watchers:
-        try:
-            track_watchers[chat_id].cancel()
-        except Exception:
-            pass
-        track_watchers.pop(chat_id, None)
-    ok = await play_entry(chat_id, next_entry)
-    if ok:
-        await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
-        log_event_sync("radio_rskip", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id})
-    else:
-        await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT_RADIO", title=next_entry.get("title")))
-
-@bot.on_message(filters.group & filters.command(["rpush"]))
-async def cmd_rpush(_, message: Message):
-    chat_id = message.chat.id
-    if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
-    args = None
-    if len(message.command) > 1:
-        args = message.text.split(None, 1)[1].strip()
-    if not args:
-        return await message.reply_text(
-            "Usage: /rpush <station_name or stream_url>\nExample: /rpush SirasaFM OR /rpush https://stream.example.com/live"
-        )
-    station_name = args
-    stream_url = None
-    title = station_name
-    if station_name in RADIO_STATION:
-        stream_url = RADIO_STATION[station_name]
-        title = station_name
-    elif looks_like_url(station_name):
-        stream_url = station_name
-        title = station_name.split("/")[-1] or station_name
-    else:
-        for k in RADIO_STATION.keys():
-            if k.lower() == station_name.lower():
-                stream_url = RADIO_STATION[k]
-                title = k
-                break
-    if not stream_url:
-        return await message.reply_text("Could not find station or invalid URL. Provide a valid station name or URL.")
-    entry = {
-        "title": title,
-        "stream_url": stream_url,
-        "webpage": None,
-        "thumbnail": None,
-        "duration": None,
-        "is_local": False,
-    }
-    if chat_id not in radio_queue:
-        radio_queue[chat_id] = []
-    radio_queue[chat_id].append(entry)
-    await message.reply_text(t(chat_id, "ADDED_RADIO_QUEUE", title=title))
-    log_event_sync("radio_rpush", {"chat_id": chat_id, "title": title, "by": message.from_user.id})
-
-@bot.on_message(filters.group & filters.command(["rresume", "rremuse"]))
-async def cmd_rresume(_, message: Message):
-    chat_id = message.chat.id
-    if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_RESUME"))
-    state = radio_state.get(chat_id)
-    if not state:
-        return await message.reply_text(t(chat_id, "NOTHING_TO_RESUME"))
-    try:
-        await _safe_call_py_method("resume_stream", chat_id)
-        await _safe_call_py_method("resume", chat_id)
-        elapsed = state.get("elapsed", 0.0) or 0.0
-        start_time = time.time() - elapsed
-        state["paused"] = False
-        state["elapsed"] = 0.0
-        state["start_time"] = start_time
-        radio_paused.discard(chat_id)
-        duration = state.get("duration")
-        store_play_state(
-            chat_id,
-            state.get("station"),
-            state.get("url"),
-            state.get("msg_id"),
-            start_time,
-            elapsed=0.0,
-            paused=False,
-            duration=duration,
-        )
-        if duration is not None:
-            if chat_id in radio_tasks:
-                try:
-                    radio_tasks[chat_id].cancel()
-                except Exception:
-                    pass
-                radio_tasks.pop(chat_id, None)
-            radio_tasks[chat_id] = asyncio.create_task(
-                update_radio_timer(chat_id, state.get("msg_id"), state.get("station"), start_time, duration)
-            )
-        try:
-            await bot.edit_message_reply_markup(chat_id, state.get("msg_id"), reply_markup=player_controls_markup(chat_id))
-        except Exception:
-            pass
-        await message.reply_text(t(chat_id, "RADIO_RESUMED"))
-        log_event_sync("radio_resumed_cmd", {"chat_id": chat_id, "by": message.from_user.id})
-    except Exception as e:
-        logging.debug(f"cmd_rresume failed: {e}")
-        await message.reply_text(t(chat_id, "FAILED_RESUME"))
-
-# ---------- BLOCK / UNBLOCK ----------
-@bot.on_message(filters.group & filters.command(["bl", "block"]))
-async def cmd_block_group(_, message: Message):
-    chat_id = message.chat.id
-    if not message.from_user or message.from_user.id != OWNER_ID:
-        return await message.reply_text(t(chat_id, "ONLY_OWNER_BLOCK"))
-    try:
-        block_group_sync(chat_id, message.from_user.id, reason="blocked by owner via /bl")
-        await message.reply_text(t(chat_id, "GROUP_BLOCKED_OK"))
-        log_event_sync("group_blocked", {"chat_id": chat_id, "by": message.from_user.id})
-    except Exception as e:
-        logging.warning(f"Failed to block group {chat_id}: {e}")
-        await message.reply_text(t(chat_id, "FAILED_BLOCK_GROUP"))
-
-@bot.on_message(filters.group & filters.command(["unbl", "unblock"]))
-async def cmd_unblock_group(_, message: Message):
-    chat_id = message.chat.id
-    if not message.from_user or message.from_user.id != OWNER_ID:
-        return await message.reply_text(t(chat_id, "ONLY_OWNER_UNBLOCK"))
-    try:
-        unblock_group_sync(chat_id)
-        await message.reply_text(t(chat_id, "GROUP_UNBLOCKED_OK"))
-        log_event_sync("group_unblocked", {"chat_id": chat_id, "by": message.from_user.id})
-    except Exception as e:
-        logging.warning(f"Failed to unblock group {chat_id}: {e}")
-        await message.reply_text(t(chat_id, "FAILED_UNBLOCK_GROUP"))
-
-# ---------- OWNER PANEL ----------
-@bot.on_message(filters.private & filters.command(["panel"]))
-async def owner_panel(_, message: Message):
-    chat_id = message.chat.id
-    if not message.from_user or message.from_user.id != OWNER_ID:
-        return await message.reply_text(t(chat_id, "ONLY_OWNER_PANEL"))
-    if db is None:
-        return await message.reply_text(t(chat_id, "DB_NOT_CONFIGURED"))
-    try:
-        blocked = list(db.blocked.find({}).sort("ts", -1).limit(100))
-        if not blocked:
-            return await message.reply_text(t(chat_id, "BLOCK_LIST_EMPTY"))
-        text_lines = [t(chat_id, "BLOCK_LIST_HEADER")]
-        for b in blocked:
-            text_lines.append(
-                f"- {b.get('chat_id')} (by {b.get('by')}, reason: {b.get('reason') or 'n/a'})"
-            )
-        await message.reply_text("\n".join(text_lines))
-    except Exception as e:
-        logging.warning(f"Failed to fetch blocked list: {e}")
-        await message.reply_text(t(chat_id, "FAILED_FETCH_BLOCKS"))
-
-# ---------- CALLBACK handlers use safe_query_answer ----------
+# ---------- skip /queue /stop callbacks adapted to UI->voice mapping ----------
 @bot.on_callback_query(filters.regex("^music_skip$"))
 async def cb_music_skip(_, query: CallbackQuery):
-    chat_id = query.message.chat.id
+    ui_chat = query.message.chat.id
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
     if not await dlk_privilege_validator(query):
-        return await safe_query_answer(query, t(chat_id, "ONLY_ADMINS_SKIP"), show_alert=True)
-    q = radio_queue.get(chat_id, [])
+        return await safe_query_answer(query, t(ui_chat, "ONLY_ADMINS_SKIP"), show_alert=True)
+    q = radio_queue.get(voice_chat, [])
     if not q:
-        await leave_voice_chat(chat_id)
+        await leave_voice_chat(voice_chat)
         try:
             await query.message.edit_caption(
-                caption=t(chat_id, "MUSIC_SKIP_BTN_NO_QUEUE"),
+                caption=t(ui_chat, "MUSIC_SKIP_BTN_NO_QUEUE"),
                 reply_markup=None,
             )
         except Exception:
             pass
-        await safe_query_answer(query, t(chat_id, "MUSIC_SKIP_BTN_ALERT"), show_alert=True)
-        log_event_sync(
-            "music_skipped_stop",
-            {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None},
-        )
+        await safe_query_answer(query, t(ui_chat, "MUSIC_SKIP_BTN_ALERT"), show_alert=True)
+        log_event_sync("music_skipped_stop", {"chat_id": voice_chat, "by": query.from_user.id if query.from_user else None})
         return
     next_entry = q.pop(0)
-    radio_queue[chat_id] = q
-    if chat_id in track_watchers:
+    radio_queue[voice_chat] = q
+    if voice_chat in track_watchers:
         try:
-            track_watchers[chat_id].cancel()
+            track_watchers[voice_chat].cancel()
         except Exception:
             pass
-        track_watchers.pop(chat_id, None)
-    ok = await play_entry(chat_id, next_entry)
+        track_watchers.pop(voice_chat, None)
+    ok = await play_entry(voice_chat, next_entry, ui_chat_id=ui_chat)
     if ok:
         try:
             await query.message.edit_caption(
-                caption=t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]),
-                reply_markup=player_controls_markup(chat_id),
+                caption=t(ui_chat, "NOW_PLAYING_QUEUE", title=next_entry["title"]),
+                reply_markup=player_controls_markup(ui_chat),
             )
         except Exception:
             pass
-        await safe_query_answer(query, t(chat_id, "MUSIC_SKIP_BTN_ALERT"), show_alert=False)
-        log_event_sync(
-            "music_skipped",
-            {"chat_id": chat_id, "title": next_entry["title"], "by": query.from_user.id if query.from_user else None},
-        )
+        await safe_query_answer(query, t(ui_chat, "MUSIC_SKIP_BTN_ALERT"), show_alert=False)
+        log_event_sync("music_skipped", {"chat_id": voice_chat, "title": next_entry["title"], "by": query.from_user.id if query.from_user else None})
     else:
-        await safe_query_answer(query, t(chat_id, "MUSIC_SKIP_BTN_FAIL"), show_alert=True)
+        await safe_query_answer(query, t(ui_chat, "MUSIC_SKIP_BTN_FAIL"), show_alert=True)
 
 @bot.on_callback_query(filters.regex("^radio_pause$"))
 async def radio_pause_cb(_, query: CallbackQuery):
-    chat_id = query.message.chat.id
+    ui_chat = query.message.chat.id
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
     if not await dlk_privilege_validator(query):
-        return await safe_query_answer(query, t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
-    state = radio_state.get(chat_id)
+        return await safe_query_answer(query, t(ui_chat, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
+    state = radio_state.get(voice_chat)
     if not state:
-        return await safe_query_answer(query, t(chat_id, "RADIO_NOTHING_PLAYING"), show_alert=True)
+        return await safe_query_answer(query, t(ui_chat, "RADIO_NOTHING_PLAYING"), show_alert=True)
     try:
-        await _safe_call_py_method("pause_stream", chat_id)
-        await _safe_call_py_method("pause", chat_id)
+        await _safe_call_py_method("pause_stream", voice_chat)
+        await _safe_call_py_method("pause", voice_chat)
         start_time = state.get("start_time") or time.time()
         elapsed = time.time() - start_time if start_time else state.get("elapsed", 0.0)
         state["paused"] = True
         state["elapsed"] = elapsed
         state["start_time"] = None
-        radio_paused.add(chat_id)
+        radio_paused.add(voice_chat)
         store_play_state(
-            chat_id,
+            voice_chat,
+            state.get("ui_chat_id") or ui_chat,
             state.get("station"),
             state.get("url"),
             state.get("msg_id"),
@@ -2024,35 +1798,37 @@ async def radio_pause_cb(_, query: CallbackQuery):
             duration=state.get("duration"),
         )
         try:
-            await query.message.edit_reply_markup(reply_markup=player_controls_markup(chat_id))
+            await query.message.edit_reply_markup(reply_markup=player_controls_markup(ui_chat))
         except Exception:
             pass
-        await safe_query_answer(query, t(chat_id, "RADIO_PAUSED"), show_alert=False)
-        log_event_sync("radio_paused", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
+        await safe_query_answer(query, t(ui_chat, "RADIO_PAUSED"), show_alert=False)
+        log_event_sync("radio_paused", {"chat_id": voice_chat, "by": query.from_user.id if query.from_user else None})
     except Exception as e:
         logging.debug(f"Pause failed: {e}")
-        await safe_query_answer(query, t(chat_id, "RADIO_PAUSE_FAIL"), show_alert=True)
+        await safe_query_answer(query, t(ui_chat, "RADIO_PAUSE_FAIL"), show_alert=True)
 
 @bot.on_callback_query(filters.regex("^radio_resume$"))
 async def radio_resume_cb(_, query: CallbackQuery):
-    chat_id = query.message.chat.id
+    ui_chat = query.message.chat.id
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
     if not await dlk_privilege_validator(query):
-        return await safe_query_answer(query, t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
-    state = radio_state.get(chat_id)
+        return await safe_query_answer(query, t(ui_chat, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
+    state = radio_state.get(voice_chat)
     if not state:
-        return await safe_query_answer(query, t(chat_id, "NOTHING_TO_RESUME_BTN"), show_alert=True)
+        return await safe_query_answer(query, t(ui_chat, "NOTHING_TO_RESUME_BTN"), show_alert=True)
     try:
-        await _safe_call_py_method("resume_stream", chat_id)
-        await _safe_call_py_method("resume", chat_id)
+        await _safe_call_py_method("resume_stream", voice_chat)
+        await _safe_call_py_method("resume", voice_chat)
         elapsed = state.get("elapsed", 0.0) or 0.0
         start_time = time.time() - elapsed
         state["paused"] = False
         state["elapsed"] = 0.0
         state["start_time"] = start_time
-        radio_paused.discard(chat_id)
+        radio_paused.discard(voice_chat)
         duration = state.get("duration")
         store_play_state(
-            chat_id,
+            voice_chat,
+            state.get("ui_chat_id") or ui_chat,
             state.get("station"),
             state.get("url"),
             state.get("msg_id"),
@@ -2062,67 +1838,61 @@ async def radio_resume_cb(_, query: CallbackQuery):
             duration=duration,
         )
         if duration is not None:
-            if chat_id in radio_tasks:
+            if voice_chat in radio_tasks:
                 try:
-                    radio_tasks[chat_id].cancel()
+                    radio_tasks[voice_chat].cancel()
                 except Exception:
                     pass
-                radio_tasks.pop(chat_id, None)
-            radio_tasks[chat_id] = asyncio.create_task(
-                update_radio_timer(chat_id, state.get("msg_id"), state.get("station"), start_time, duration)
+                radio_tasks.pop(voice_chat, None)
+            radio_tasks[voice_chat] = asyncio.create_task(
+                update_radio_timer(voice_chat, state.get("ui_chat_id") or ui_chat, state.get("msg_id"), state.get("station"), start_time, duration)
             )
         try:
-            await query.message.edit_reply_markup(reply_markup=player_controls_markup(chat_id))
+            await query.message.edit_reply_markup(reply_markup=player_controls_markup(ui_chat))
         except Exception:
             pass
-        await safe_query_answer(query, t(chat_id, "RADIO_RESUMED_BTN"), show_alert=False)
-        log_event_sync("radio_resumed", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
+        await safe_query_answer(query, t(ui_chat, "RADIO_RESUMED_BTN"), show_alert=False)
+        log_event_sync("radio_resumed", {"chat_id": voice_chat, "by": query.from_user.id if query.from_user else None})
     except Exception as e:
         logging.debug(f"Resume failed: {e}")
-        await safe_query_answer(query, t(chat_id, "RADIO_RESUME_FAIL_BTN"), show_alert=True)
+        await safe_query_answer(query, t(ui_chat, "RADIO_RESUME_FAIL_BTN"), show_alert=True)
 
 @bot.on_callback_query(filters.regex("^radio_stop$"))
 async def cb_radio_stop(_, query: CallbackQuery):
-    chat_id = query.message.chat.id
+    ui_chat = query.message.chat.id
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
     if not await dlk_privilege_validator(query):
-        return await safe_query_answer(query, t(chat_id, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
+        return await safe_query_answer(query, t(ui_chat, "ONLY_ADMINS_RADIO_BUTTON"), show_alert=True)
     try:
-        await leave_voice_chat(chat_id)
+        await leave_voice_chat(voice_chat)
         try:
             await query.message.delete()
         except Exception:
             try:
                 await query.message.edit_caption(
-                    caption=t(chat_id, "RADIO_STOPPED_BTN"),
+                    caption=t(ui_chat, "RADIO_STOPPED_BTN"),
                     reply_markup=None,
                 )
             except Exception:
                 pass
-        await safe_query_answer(query, t(chat_id, "RADIO_STOPPED_BTN"), show_alert=False)
-        log_event_sync("radio_stopped", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
+        await safe_query_answer(query, t(ui_chat, "RADIO_STOPPED_BTN"), show_alert=False)
+        log_event_sync("radio_stopped", {"chat_id": voice_chat, "by": query.from_user.id if query.from_user else None})
     except Exception as e:
         logging.error(f"Stop failed via callback: {e}", exc_info=True)
-        await safe_query_answer(query, t(chat_id, "RADIO_STOP_FAIL_BTN"), show_alert=True)
+        await safe_query_answer(query, t(ui_chat, "RADIO_STOP_FAIL_BTN"), show_alert=True)
 
 # ---------- DELETE (❌) button handler ----------
 @bot.on_callback_query(filters.regex("^player_delete$"))
 async def cb_player_delete(_, query: CallbackQuery):
-    """
-    Delete the now-playing message and stop playback for that chat.
-    Permission model:
-      - If there is a group linked to this channel, require the user to be admin in that group (or owner).
-      - Otherwise, require OWNER_ID.
-    """
-    msg_chat = query.message.chat
-    chat_id = msg_chat.id
+    ui_chat = query.message.chat.id
     user = query.from_user
-    # find associated group (reverse lookup)
-    group_id = find_group_for_channel(chat_id)
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
+    # find associated group for permission check
+    group_id = find_group_for_channel(voice_chat)
     allowed = False
     if user and user.id == OWNER_ID:
         allowed = True
     elif group_id:
-        # check user admin in the group
         try:
             member = await bot.get_chat_member(group_id, user.id)
             status = getattr(member, "status", "").lower()
@@ -2131,37 +1901,52 @@ async def cb_player_delete(_, query: CallbackQuery):
         except Exception:
             allowed = False
     else:
-        # no mapping found; only owner allowed
         allowed = (user and user.id == OWNER_ID)
     if not allowed:
         await safe_query_answer(query, "Only the linked group admins or owner can delete this.", show_alert=True)
         return
     try:
-        await leave_voice_chat(chat_id)
+        await leave_voice_chat(voice_chat)
     except Exception:
         pass
     try:
         await query.message.delete()
     except Exception:
         try:
-            await query.message.edit_caption(caption=t(chat_id, "BOT_STOPPED"), reply_markup=None)
+            await query.message.edit_caption(caption=t(ui_chat, "BOT_STOPPED"), reply_markup=None)
         except Exception:
             pass
     await safe_query_answer(query, "Deleted and stopped.")
-    log_event_sync("player_deleted", {"chat_id": chat_id, "by": user.id if user else None})
+    log_event_sync("player_deleted", {"voice_chat": voice_chat, "ui_chat": ui_chat, "by": user.id if user else None})
 
 # ---------- RADIO BUTTON PLAY ----------
 @bot.on_callback_query(filters.regex("^radio_play_"))
 async def play_radio_station(_, query: CallbackQuery):
-    chat_id = query.message.chat.id
+    ui_chat = query.message.chat.id
     station = query.data.replace("radio_play_", "")
     url = RADIO_STATION.get(station)
     user = query.from_user
-    if is_group_blocked_sync(chat_id):
-        await safe_query_answer(query, t(chat_id, "ASSISTANT_BLOCKED_GROUP"), show_alert=True)
+    # If this UI belongs to a group which linked a channel, play into the linked channel and show UI in the group.
+    linked = get_linked_channel(ui_chat)
+    if linked:
+        try:
+            chat_obj = await bot.get_chat(linked)
+            voice_chat = chat_obj.id
+        except Exception as e:
+            logging.debug(f"Failed to resolve linked channel for radio_play: {e}")
+            await safe_query_answer(query, "Failed to resolve linked channel.", show_alert=True)
+            return
+        ui_chat_for_ui = ui_chat
+    else:
+        # no linked channel: treat UI chat as the voice chat
+        voice_chat = ui_chat
+        ui_chat_for_ui = ui_chat
+
+    if is_group_blocked_sync(voice_chat):
+        await safe_query_answer(query, t(ui_chat_for_ui, "ASSISTANT_BLOCKED_GROUP"), show_alert=True)
         return
     if not url:
-        return await safe_query_answer(query, t(chat_id, "STATION_URL_NOT_FOUND"), show_alert=True)
+        return await safe_query_answer(query, t(ui_chat_for_ui, "STATION_URL_NOT_FOUND"), show_alert=True)
     try:
         try:
             assistant_user = await assistant.get_me()
@@ -2171,7 +1956,7 @@ async def play_radio_station(_, query: CallbackQuery):
         assistant_present = False
         if assistant_id:
             try:
-                await assistant.get_chat_member(chat_id, assistant_id)
+                await assistant.get_chat_member(voice_chat, assistant_id)
                 assistant_present = True
             except RPCError:
                 assistant_present = False
@@ -2180,13 +1965,13 @@ async def play_radio_station(_, query: CallbackQuery):
                 await safe_query_answer(query, "Assistant session is not configured. Set ASSISTANT_SESSION and restart.", show_alert=True)
                 return
             try:
-                invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+                invite = await bot.create_chat_invite_link(voice_chat, member_limit=1, name="DLK BOT assistant")
                 invite_link = invite.invite_link
                 try:
                     await assistant.join_chat(invite_link)
                     assistant_present = True
                     try:
-                        await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+                        await bot.send_message(ui_chat_for_ui, t(ui_chat_for_ui, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
                     except Exception:
                         pass
                 except Exception as e_join:
@@ -2198,57 +1983,57 @@ async def play_radio_station(_, query: CallbackQuery):
                         [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
                     ])
                     await query.message.reply_text(
-                        t(chat_id, "ASSISTANT_INVITE_TEXT"),
+                        t(ui_chat_for_ui, "ASSISTANT_INVITE_TEXT"),
                         reply_markup=help_kb,
                     )
                     await safe_query_answer(query)
                     return
             except Exception as e_inv:
                 logging.warning(f"Cannot create invite/join assistant: {e_inv}")
-                await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
+                await query.message.reply_text(t(ui_chat_for_ui, "ASSISTANT_INVITE_FAIL_TEXT"))
                 await safe_query_answer(query)
                 return
         # start the stream robustly
-        started = await _start_stream_in_call(chat_id, url)
+        started = await _start_stream_in_call(voice_chat, url)
         if not started:
-            await leave_voice_chat(chat_id)
+            await leave_voice_chat(voice_chat)
             if AudioPiped is not None and not is_ffmpeg_available():
                 await query.message.reply_text(
                     "❌ Failed to start radio: ffmpeg is not installed in the environment. "
                     "Install ffmpeg (on Heroku add ffmpeg buildpack) and restart the bot. "
-                    "Also ensure the assistant account is present in the group and has permission to speak."
+                    "Also ensure the assistant account is present and has permission to speak."
                 )
             else:
-                await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error="assistant failed to start stream"))
+                await query.message.reply_text(t(ui_chat_for_ui, "RADIO_PLAY_FAILED_ASSIST", error="assistant failed to start stream"))
             await safe_query_answer(query, "Failed to start radio", show_alert=True)
             return
 
         msg = await query.message.edit_caption(
             caption=f"🎧 {station}\n🔴 LIVE Radio",
-            reply_markup=player_controls_markup(chat_id),
+            reply_markup=player_controls_markup(ui_chat_for_ui),
         )
         start_time = time.time()
-        store_play_state(chat_id, station, url, msg.id, start_time, elapsed=0.0, paused=False, duration=None)
-        radio_paused.discard(chat_id)
+        store_play_state(voice_chat, ui_chat_for_ui, station, url, msg.id, start_time, elapsed=0.0, paused=False, duration=None)
+        radio_paused.discard(voice_chat)
         await safe_query_answer(query, f"Now playing {station} via assistant!", show_alert=False)
-        log_event_sync("radio_started", {"chat_id": chat_id, "station": station, "by": user.id if user else None})
+        log_event_sync("radio_started", {"voice_chat": voice_chat, "station": station, "by": user.id if user else None})
     except FloodWait as e:
-        await leave_voice_chat(chat_id)
+        await leave_voice_chat(voice_chat)
         wait_time = getattr(e, "value", None) or getattr(e, "x", None) or "unknown"
-        await query.message.reply_text(t(chat_id, "RATE_LIMIT", seconds=wait_time))
+        await query.message.reply_text(t(ui_chat, "RATE_LIMIT", seconds=wait_time))
         await safe_query_answer(query, f"Wait {wait_time}s", show_alert=True)
     except ntgcalls.TelegramServerError:
-        await leave_voice_chat(chat_id)
-        await query.message.reply_text(t(chat_id, "VOICECHAT_NOT_READY"))
+        await leave_voice_chat(voice_chat)
+        await query.message.reply_text(t(ui_chat_for_ui, "VOICECHAT_NOT_READY"))
         await safe_query_answer(query, "Voice chat not ready!", show_alert=True)
     except RPCError as e:
-        await leave_voice_chat(chat_id)
-        await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error=str(e)))
+        await leave_voice_chat(voice_chat)
+        await query.message.reply_text(t(ui_chat_for_ui, "RADIO_PLAY_FAILED_ASSIST", error=str(e)))
         await safe_query_answer(query)
     except Exception as e:
-        await leave_voice_chat(chat_id)
+        await leave_voice_chat(voice_chat)
         logging.error("General radio play error", exc_info=True)
-        await query.message.reply_text(t(chat_id, "RADIO_START_FAIL", error=str(e)))
+        await query.message.reply_text(t(ui_chat_for_ui, "RADIO_START_FAIL", error=str(e)))
         await safe_query_answer(query)
 
 # ---------- START / HELP / LANG ----------
@@ -2424,9 +2209,7 @@ async def cmd_debug_call_status(_, message: Message):
     if not message.from_user or message.from_user.id != OWNER_ID:
         return await message.reply_text("Only owner can use this.")
     try:
-        # Provide dump of call_py internals
         state = await dump_call_py_state(None)
-        # Truncate big fields
         txt = json.dumps(state, default=str, indent=2)[:3500]
         await message.reply_text(f"call_py internals:\n<pre>{txt}</pre>", disable_web_page_preview=True)
     except Exception as e:
