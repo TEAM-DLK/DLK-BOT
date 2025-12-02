@@ -1,20 +1,20 @@
-# DLK.py - Updated (2025-12-02)
-# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/9f7bb96736bdccc270093b98aaf69c5d437c02c3/DLK.py
+# DLK.py - Updated for user request (2025-12-02)
+# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/3c9052072800f77edd442951851671b67d52822d/DLK.py
 #
-# Summary of fixes / changes:
-# - When playing into a linked channel via /cplay or /cradio, the "Now Playing" UI message is posted into the group
-#   that linked the channel (so the UI appears in the group, not inside the channel).
-# - Added /cplend and /crend commands (channel-play end) to stop playback in the linked channel from the group.
-# - When the track finishes (track_watcher), assistant leaves the voice chat and UI is updated in the correct UI chat.
-# - Call resolution: when a linked channel is stored as a username (e.g. @DLKDEVELOPERS), the bot resolves it
-#   to a numeric chat.id before attempting to start/join calls. This avoids call_py warnings for string ids.
-# - Callbacks (pause/resume/skip/stop/delete) that come from UI chat (group) are mapped to the voice chat ID
-#   using a helper, so controls operate on the actual voice call.
-# - Minor robustness and logging improvements.
+# Changes made per user's request (Sinhala):
+# - Ensure when playing from YouTube we pick audio-only formats (avoid video) and prefer audio formats.
+# - Minimise duplicate UI messages: when a status/info message (info_msg) exists we try to edit it into the player UI
+#   instead of sending a second message.
+# - Add "requested_by" metadata to entries and display the requester's name in the player UI caption.
+# - Improve thumbnail overlay: larger artwork, centered, title placed at the bottom center, include "Added by:" line.
+# - cplay: play into linked channel but show UI in the linked group; avoid sending extra messages.
+# - Robustness: prefer audio-only formats from yt_dlp and prefer mp3-like formats if available (otherwise m4a/webm).
 #
-# Deploy notes:
-# - Ensure ASSISTANT_SESSION is set and assistant account has been added to the target channel with permission to speak.
-# - If you store channels as usernames (e.g. @mychannel) set_linked_channel keeps that, but runtime resolves to numeric id.
+# NOTE:
+# - This patch aims to avoid streaming video (YouTube) by selecting audio-only formats from yt-dlp.
+# - Converting to MP3 on the fly would require transcoding (ffmpeg) and either download or a streaming pipeline;
+#   here we choose the best audio-only format direct URL from yt-dlp (usually m4a/webm). This avoids video streams.
+# - If you absolutely need mp3 files, implement a transcoding step (download & ffmpeg -> serve) which is more complex.
 #
 # Full file contents follow.
 
@@ -31,7 +31,13 @@ import subprocess
 import json
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup
+from pyrogram.types import (
+    Message,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+)
 from pyrogram.errors import RPCError, FloodWait
 try:
     from pyrogram.errors import GroupcallForbidden
@@ -173,7 +179,6 @@ db = None
 linked_channels_local: Dict[int, Union[str, int]] = {}
 
 # TRANSLATIONS (same as before - omitted here to keep file reasonable)
-
 TRANSLATIONS = {
     "en": {
         "GROUP_BLOCKED": "❌ This group is blocked from using DLK BOT.",
@@ -356,16 +361,23 @@ def is_ffmpeg_available() -> bool:
         return False
 
 def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
+    """
+    Use yt-dlp to extract a direct audio-only stream URL.
+    Prefer audio-only formats (vcodec == 'none'). Try to prefer mp3-like extensions if available,
+    otherwise pick best audio (m4a/webm).
+    """
     if youtube_dl is None:
         logging.warning("yt_dlp not installed.")
         return None
     target = query if looks_like_url(query) else f"ytsearch1:{query}"
+    # We ask yt-dlp for bestaudio but we will inspect formats and pick an audio-only format
     ydl_opts = {
         "format": "bestaudio/best",
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
+        "extract_flat": False,
     }
     if YT_DLP_COOKIES and os.path.isfile(YT_DLP_COOKIES):
         ydl_opts["cookiefile"] = YT_DLP_COOKIES
@@ -376,20 +388,37 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
                 return None
             if "entries" in info and isinstance(info["entries"], list) and info["entries"]:
                 info = info["entries"][0]
+            # If info has direct 'url' and is an audio-only format, accept it; otherwise inspect formats
             stream_url = info.get("url")
-            if not stream_url and "formats" in info:
-                formats = info.get("formats", [])
-                best = None
-                # Prefer audio-only formats with highest abr
-                for f in sorted(formats, key=lambda x: (x.get("abr") or 0), reverse=True):
-                    acodec = f.get("acodec") or ""
-                    if acodec != "none" and f.get("url"):
-                        best = f.get("url")
-                        break
-                stream_url = best or stream_url
-            if not stream_url:
-                logging.warning("yt_dlp: no stream_url")
-                return None
+            formats = info.get("formats", []) or []
+            # Filter audio-only formats (no video codec / vcodec == 'none' or acodec != 'none' and vcodec in (None,'none'))
+            audio_formats = []
+            for f in formats:
+                vcodec = (f.get("vcodec") or "").lower()
+                acodec = (f.get("acodec") or "").lower()
+                if vcodec in ("none", "") and acodec and acodec != "none" and f.get("url"):
+                    audio_formats.append(f)
+            # If no audio-only formats found, fall back to formats with audio (may include video)
+            if not audio_formats and formats:
+                for f in formats:
+                    if f.get("acodec") and f.get("acodec") != "none" and f.get("url"):
+                        audio_formats.append(f)
+            chosen = None
+            # Prefer mp3 ext if present
+            def prefer_score(f):
+                ext = (f.get("ext") or "").lower()
+                abr = f.get("abr") or f.get("tbr") or 0
+                score = int(abr) or 0
+                if ext == "mp3":
+                    score += 10000
+                if ext in ("m4a", "aac"):
+                    score += 5000
+                return score
+            if audio_formats:
+                audio_formats_sorted = sorted(audio_formats, key=prefer_score, reverse=True)
+                chosen = audio_formats_sorted[0]
+                stream_url = chosen.get("url") or stream_url
+            # duration/title/thumb
             duration = info.get("duration") or info.get("original_duration")
             try:
                 if duration is not None:
@@ -402,6 +431,7 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
                 "stream_url": stream_url,
                 "thumbnail": info.get("thumbnail"),
                 "duration": duration,
+                "format": chosen.get("ext") if chosen else None,
             }
     except Exception as e:
         logging.warning(f"yt_dlp failed: {e}")
@@ -472,6 +502,10 @@ def _create_circular_artwork(image: Image.Image, diameter: int = 520, border: in
     return out
 
 async def _process_image_and_overlay(src_path: str, out_key: str, title: str) -> Optional[str]:
+    """
+    Create a larger thumbnail background (1280x720), center artwork, and place the title
+    and 'Added by:' text at the bottom center with good contrast.
+    """
     try:
         image = Image.open(src_path).convert("RGBA")
         try:
@@ -480,30 +514,51 @@ async def _process_image_and_overlay(src_path: str, out_key: str, title: str) ->
             background = image.resize((1280, 720), Image.LANCZOS).convert("RGBA")
         background = background.filter(ImageFilter.BoxBlur(8))
         enhancer = ImageEnhance.Brightness(background)
-        background = enhancer.enhance(0.7)
+        background = enhancer.enhance(0.55)
         try:
             converter = ImageEnhance.Color(background)
-            background = converter.enhance(0.25)
+            background = converter.enhance(0.2)
         except Exception:
             pass
-        art = _create_circular_artwork(image, diameter=520, border=10)
-        art_x = (1280 - art.size[0]) // 10
+        # Make artwork circular and place centered vertically/horizontally to left quarter
+        art = _create_circular_artwork(image, diameter=520, border=8)
+        art_x = 60
         art_y = (720 - art.size[1]) // 2
         background.paste(art, (art_x, art_y), art)
         draw = ImageDraw.Draw(background)
+        # Fonts: try to use a TTF; fallback to default
         try:
-            title_font = ImageFont.truetype("arial.ttf", 48)
-            small_font = ImageFont.truetype("arial.ttf", 18)
+            title_font = ImageFont.truetype("arial.ttf", 64)
+            small_font = ImageFont.truetype("arial.ttf", 30)
         except Exception:
             title_font = ImageFont.load_default()
             small_font = ImageFont.load_default()
-        draw.text((20, 20), "DLK DEVELOPER", fill="white", font=small_font)
-        title_x = art_x + art.size[0] + 30
-        title_y = art_y + 30
-        shadow_color = (0, 0, 0, 200)
-        for dx, dy in ((1, 1), (2, 2)):
-            draw.text((title_x+dx, title_y+dy), clear_title(title), fill=shadow_color, font=title_font)
-        draw.text((title_x, title_y), clear_title(title), fill="white", font=title_font)
+        # Compose bottom text (title and optional 'Added by:')
+        lines = title.split("\n")
+        # Draw a translucent rectangle at bottom for readability
+        rect_h = 140
+        rect_y0 = 720 - rect_h - 20
+        rect = Image.new('RGBA', (1280 - 40, rect_h), (0, 0, 0, 140))
+        background.paste(rect, (20, rect_y0), rect)
+        # Write title centered
+        y_text = rect_y0 + 16
+        for i, ln in enumerate(lines):
+            # Center text
+            ln_clean = clear_title(ln)
+            w, h = draw.textsize(ln_clean, font=title_font)
+            x = (1280 // 2) - (w // 2) + 80  # slightly right to offset for artwork
+            # shadow
+            for dx, dy in ((1,1),(2,2)):
+                draw.text((x+dx, y_text+dy), ln_clean, font=title_font, fill=(0,0,0,200))
+            draw.text((x, y_text), ln_clean, font=title_font, fill=(255,255,255,255))
+            y_text += h + 6
+        # If extra small "Added by:" present as last line, render with small_font
+        # (We assume the last line is the "Added by:" line if it begins with "Added by:")
+        last_line = lines[-1] if lines else ""
+        if last_line.lower().startswith("added by:"):
+            w, h = draw.textsize(last_line, font=small_font)
+            x = (1280 // 2) - (w // 2) + 80
+            draw.text((x, y_text), last_line, font=small_font, fill=(200,200,200,255))
         out_path = os.path.join(THUMB_CACHE_DIR, f"{out_key}.png")
         background.save(out_path)
         return out_path
@@ -1303,10 +1358,12 @@ async def track_watcher(voice_chat_id: int, duration: int, msg_id: int):
         logging.debug(f"track_watcher error {voice_chat_id}: {e}")
 
 # ---------- play_entry ----------
-async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Message] = None, ui_chat_id: Optional[int] = None):
+async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Message] = None, ui_chat_id: Optional[int] = None, info_msg: Optional[Message] = None):
     """
     voice_chat_id: numeric chat id where assistant should join the voice chat (int)
     ui_chat_id: chat id where the "Now Playing" message should be posted (group id). If None, defaults to voice_chat_id.
+    info_msg: optional Message object previously sent (like "Searching...") — if provided we'll try to edit this message
+              into the player UI to avoid duplicate messages.
     """
     try:
         if voice_chat_id in radio_tasks:
@@ -1323,33 +1380,87 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
         thumb_path = None
         thumb_val = entry.get("thumbnail")
         title = entry.get("title") or "Unknown"
+        requested_by = entry.get("requested_by")
+        # Build title overlay content: include requested_by on its own line at bottom
+        overlay_title = title
+        if requested_by:
+            overlay_title = f"{title}\nAdded by: {requested_by}"
+
         if thumb_val and isinstance(thumb_val, str) and os.path.isfile(thumb_val):
             thumb_path = thumb_val
         else:
             if thumb_val and isinstance(thumb_val, str) and thumb_val.startswith("http"):
-                thumb_path = await get_thumb_from_url_or_webpage(thumb_val, entry.get("webpage"), title)
+                thumb_path = await get_thumb_from_url_or_webpage(thumb_val, entry.get("webpage"), overlay_title)
             else:
-                thumb_path = await get_thumb_from_url_or_webpage(None, entry.get("webpage"), title)
+                thumb_path = await get_thumb_from_url_or_webpage(None, entry.get("webpage"), overlay_title)
 
         # UI chat where the player will be shown
         ui_chat = ui_chat_id or voice_chat_id
 
         caption = f"🎧 {t(ui_chat, 'NOW_PLAYING', title=title)}"
+        # append requested_by in caption for visibility in chat as well
+        if requested_by:
+            caption = f"{caption}\n👤 Added by: {requested_by}"
+
         try:
-            if thumb_path and os.path.isfile(thumb_path):
-                msg = await bot.send_photo(
-                    ui_chat,
-                    photo=thumb_path,
-                    caption=caption,
-                    reply_markup=player_controls_markup(ui_chat),
-                )
+            if info_msg and info_msg.chat and info_msg.id and info_msg.chat.id == ui_chat:
+                # Try to edit existing info_msg into a photo (preferred) to avoid duplicate messages
+                if thumb_path and os.path.isfile(thumb_path):
+                    try:
+                        # Edit into a photo message
+                        await bot.edit_message_media(
+                            chat_id=ui_chat,
+                            message_id=info_msg.id,
+                            media=InputMediaPhoto(thumb_path, caption=caption),
+                            reply_markup=player_controls_markup(ui_chat),
+                        )
+                        msg = await bot.get_messages(ui_chat, info_msg.id)
+                    except Exception as e:
+                        logging.debug(f"edit_message_media failed, will fallback to delete/send: {e}")
+                        # fallback: delete and send new
+                        try:
+                            await info_msg.delete()
+                        except Exception:
+                            pass
+                        msg = await bot.send_photo(
+                            ui_chat,
+                            photo=thumb_path if os.path.isfile(thumb_path) else "https://files.catbox.moe/08qhi9.jpg",
+                            caption=caption,
+                            reply_markup=player_controls_markup(ui_chat),
+                        )
+                else:
+                    # no thumbnail: just edit text
+                    try:
+                        await bot.edit_message_text(
+                            chat_id=ui_chat,
+                            message_id=info_msg.id,
+                            text=caption,
+                            reply_markup=player_controls_markup(ui_chat),
+                        )
+                        msg = await bot.get_messages(ui_chat, info_msg.id)
+                    except Exception as e:
+                        logging.debug(f"edit_message_text failed, fallback delete/send: {e}")
+                        try:
+                            await info_msg.delete()
+                        except Exception:
+                            pass
+                        msg = await bot.send_message(ui_chat, caption, reply_markup=player_controls_markup(ui_chat))
             else:
-                msg = await bot.send_photo(
-                    ui_chat,
-                    photo="https://files.catbox.moe/08qhi9.jpg",
-                    caption=caption,
-                    reply_markup=player_controls_markup(ui_chat),
-                )
+                # No info_msg to reuse — send new UI
+                if thumb_path and os.path.isfile(thumb_path):
+                    msg = await bot.send_photo(
+                        ui_chat,
+                        photo=thumb_path,
+                        caption=caption,
+                        reply_markup=player_controls_markup(ui_chat),
+                    )
+                else:
+                    msg = await bot.send_photo(
+                        ui_chat,
+                        photo="https://files.catbox.moe/08qhi9.jpg",
+                        caption=caption,
+                        reply_markup=player_controls_markup(ui_chat),
+                    )
         except Exception:
             # fallback: try without thumbnail
             try:
@@ -1397,7 +1508,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
             except Exception:
                 pass
         track_watchers[voice_chat_id] = asyncio.create_task(track_watcher(voice_chat_id, duration, msg_id))
-        log_event_sync("music_started", {"voice_chat_id": voice_chat_id, "ui_chat": ui_chat, "title": title})
+        log_event_sync("music_started", {"voice_chat_id": voice_chat_id, "ui_chat": ui_chat, "title": title, "requested_by": requested_by})
         return True
     except Exception:
         logging.error("Play entry failed", exc_info=True)
@@ -1452,6 +1563,7 @@ async def cmd_play(_, message: Message):
     if message.reply_to_message:
         entry = await prepare_entry_from_reply(message.reply_to_message)
         if entry:
+            entry["requested_by"] = (user.first_name or user.username or str(user.id)) if user else None
             info_msg = await message.reply_text(t(chat_id, "PREPARING_AUDIO_REPLY"))
     if not entry:
         query = None
@@ -1473,6 +1585,8 @@ async def cmd_play(_, message: Message):
             "thumbnail": info.get("thumbnail"),
             "duration": info.get("duration"),
             "is_local": False,
+            "format": info.get("format"),
+            "requested_by": (user.first_name or user.username or str(user.id)) if user else None,
         }
     if chat_id not in radio_queue:
         radio_queue[chat_id] = []
@@ -1486,7 +1600,7 @@ async def cmd_play(_, message: Message):
             pass
         log_event_sync("music_queued", {"chat_id": chat_id, "title": entry["title"], "by": user.id})
         return
-    ok = await play_entry(chat_id, entry, reply_message=message, ui_chat_id=chat_id)
+    ok = await play_entry(chat_id, entry, reply_message=message, ui_chat_id=chat_id, info_msg=info_msg)
     if ok:
         try:
             if info_msg:
@@ -1613,9 +1727,11 @@ async def cmd_cplay(_, message: Message):
 
     entry = None
     info_msg = None
+    user = message.from_user
     if message.reply_to_message:
         entry = await prepare_entry_from_reply(message.reply_to_message)
         if entry:
+            entry["requested_by"] = (user.first_name or user.username or str(user.id)) if user else None
             info_msg = await message.reply_text("Preparing audio to play in linked channel...")
     if not entry:
         query = None
@@ -1637,6 +1753,8 @@ async def cmd_cplay(_, message: Message):
             "thumbnail": info.get("thumbnail"),
             "duration": info.get("duration"),
             "is_local": False,
+            "format": info.get("format"),
+            "requested_by": (user.first_name or user.username or str(user.id)) if user else None,
         }
 
     if voice_chat_id not in radio_queue:
@@ -1653,14 +1771,15 @@ async def cmd_cplay(_, message: Message):
             pass
         log_event_sync("cplay_queued", {"group_id": group_id, "channel": voice_chat_id, "title": entry["title"], "by": message.from_user.id})
         return
-    ok = await play_entry(voice_chat_id, entry, reply_message=message, ui_chat_id=ui_chat_for_ui)
+    ok = await play_entry(voice_chat_id, entry, reply_message=message, ui_chat_id=ui_chat_for_ui, info_msg=info_msg)
     if ok:
         try:
             if info_msg:
-                await info_msg.edit_text(f"Now playing in channel (via assistant).")
+                # info_msg has been edited into the UI by play_entry; if not, ensure group has a short confirmation
+                await info_msg.edit_text(f"Now playing in channel (via assistant): {entry['title']}")
         except Exception:
             pass
-        await message.reply_text(f"Started playing in linked channel (via assistant): {entry['title']}")
+        # avoid an extra reply; the UI is shown in the group. Only send minimal log reply if needed
         log_event_sync("cplay_started", {"group_id": group_id, "channel": voice_chat_id, "title": entry["title"], "by": message.from_user.id})
     else:
         try:
