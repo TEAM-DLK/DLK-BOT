@@ -1,22 +1,7 @@
-# DLK.py - Updated for user request (2025-12-02)
+# DLK.py - Updated (2025-12-02) - audio-only, /radio handler, station thumbnails, UI fixes
 # Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/3c9052072800f77edd442951851671b67d52822d/DLK.py
 #
-# Changes made per user's request (Sinhala):
-# - Ensure when playing from YouTube we pick audio-only formats (avoid video) and prefer audio formats.
-# - Minimise duplicate UI messages: when a status/info message (info_msg) exists we try to edit it into the player UI
-#   instead of sending a second message.
-# - Add "requested_by" metadata to entries and display the requester's name in the player UI caption.
-# - Improve thumbnail overlay: larger artwork, centered, title placed at the bottom center, include "Added by:" line.
-# - cplay: play into linked channel but show UI in the linked group; avoid sending extra messages.
-# - Robustness: prefer audio-only formats from yt_dlp and prefer mp3-like formats if available (otherwise m4a/webm).
-#
-# NOTE:
-# - This patch aims to avoid streaming video (YouTube) by selecting audio-only formats from yt-dlp.
-# - Converting to MP3 on the fly would require transcoding (ffmpeg) and either download or a streaming pipeline;
-#   here we choose the best audio-only format direct URL from yt-dlp (usually m4a/webm). This avoids video streams.
-# - If you absolutely need mp3 files, implement a transcoding step (download & ffmpeg -> serve) which is more complex.
-#
-# Full file contents follow.
+# See assistant message for summary of changes.
 
 import os
 import re
@@ -31,13 +16,7 @@ import subprocess
 import json
 
 from pyrogram import Client, filters
-from pyrogram.types import (
-    Message,
-    CallbackQuery,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    InputMediaPhoto,
-)
+from pyrogram.types import Message, CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from pyrogram.errors import RPCError, FloodWait
 try:
     from pyrogram.errors import GroupcallForbidden
@@ -178,7 +157,6 @@ db = None
 # linked channel mapping local fallback (if DB disabled)
 linked_channels_local: Dict[int, Union[str, int]] = {}
 
-# TRANSLATIONS (same as before - omitted here to keep file reasonable)
 TRANSLATIONS = {
     "en": {
         "GROUP_BLOCKED": "❌ This group is blocked from using DLK BOT.",
@@ -362,15 +340,12 @@ def is_ffmpeg_available() -> bool:
 
 def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
     """
-    Use yt-dlp to extract a direct audio-only stream URL.
-    Prefer audio-only formats (vcodec == 'none'). Try to prefer mp3-like extensions if available,
-    otherwise pick best audio (m4a/webm).
+    Use yt-dlp to extract a direct audio-only stream URL and prefer audio-only formats.
     """
     if youtube_dl is None:
         logging.warning("yt_dlp not installed.")
         return None
     target = query if looks_like_url(query) else f"ytsearch1:{query}"
-    # We ask yt-dlp for bestaudio but we will inspect formats and pick an audio-only format
     ydl_opts = {
         "format": "bestaudio/best",
         "quiet": True,
@@ -388,23 +363,19 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
                 return None
             if "entries" in info and isinstance(info["entries"], list) and info["entries"]:
                 info = info["entries"][0]
-            # If info has direct 'url' and is an audio-only format, accept it; otherwise inspect formats
             stream_url = info.get("url")
             formats = info.get("formats", []) or []
-            # Filter audio-only formats (no video codec / vcodec == 'none' or acodec != 'none' and vcodec in (None,'none'))
             audio_formats = []
             for f in formats:
                 vcodec = (f.get("vcodec") or "").lower()
                 acodec = (f.get("acodec") or "").lower()
-                if vcodec in ("none", "") and acodec and acodec != "none" and f.get("url"):
+                if (vcodec in ("none", "") or "none" in vcodec) and acodec and acodec != "none" and f.get("url"):
                     audio_formats.append(f)
-            # If no audio-only formats found, fall back to formats with audio (may include video)
             if not audio_formats and formats:
                 for f in formats:
                     if f.get("acodec") and f.get("acodec") != "none" and f.get("url"):
                         audio_formats.append(f)
             chosen = None
-            # Prefer mp3 ext if present
             def prefer_score(f):
                 ext = (f.get("ext") or "").lower()
                 abr = f.get("abr") or f.get("tbr") or 0
@@ -418,7 +389,6 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
                 audio_formats_sorted = sorted(audio_formats, key=prefer_score, reverse=True)
                 chosen = audio_formats_sorted[0]
                 stream_url = chosen.get("url") or stream_url
-            # duration/title/thumb
             duration = info.get("duration") or info.get("original_duration")
             try:
                 if duration is not None:
@@ -502,10 +472,6 @@ def _create_circular_artwork(image: Image.Image, diameter: int = 520, border: in
     return out
 
 async def _process_image_and_overlay(src_path: str, out_key: str, title: str) -> Optional[str]:
-    """
-    Create a larger thumbnail background (1280x720), center artwork, and place the title
-    and 'Added by:' text at the bottom center with good contrast.
-    """
     try:
         image = Image.open(src_path).convert("RGBA")
         try:
@@ -520,45 +486,33 @@ async def _process_image_and_overlay(src_path: str, out_key: str, title: str) ->
             background = converter.enhance(0.2)
         except Exception:
             pass
-        # Make artwork circular and place centered vertically/horizontally to left quarter
         art = _create_circular_artwork(image, diameter=520, border=8)
         art_x = 60
         art_y = (720 - art.size[1]) // 2
         background.paste(art, (art_x, art_y), art)
         draw = ImageDraw.Draw(background)
-        # Fonts: try to use a TTF; fallback to default
         try:
-            title_font = ImageFont.truetype("arial.ttf", 64)
-            small_font = ImageFont.truetype("arial.ttf", 30)
+            title_font = ImageFont.truetype("DejaVuSans.ttf", 56)
+            small_font = ImageFont.truetype("DejaVuSans.ttf", 28)
         except Exception:
             title_font = ImageFont.load_default()
             small_font = ImageFont.load_default()
-        # Compose bottom text (title and optional 'Added by:')
-        lines = title.split("\n")
-        # Draw a translucent rectangle at bottom for readability
+        # bottom translucent bar
         rect_h = 140
         rect_y0 = 720 - rect_h - 20
         rect = Image.new('RGBA', (1280 - 40, rect_h), (0, 0, 0, 140))
         background.paste(rect, (20, rect_y0), rect)
-        # Write title centered
+        # draw title centered right of artwork
+        lines = (title or "").split("\n")
         y_text = rect_y0 + 16
-        for i, ln in enumerate(lines):
-            # Center text
+        for ln in lines:
             ln_clean = clear_title(ln)
             w, h = draw.textsize(ln_clean, font=title_font)
-            x = (1280 // 2) - (w // 2) + 80  # slightly right to offset for artwork
-            # shadow
+            x = (1280 // 2) - (w // 2) + 80
             for dx, dy in ((1,1),(2,2)):
                 draw.text((x+dx, y_text+dy), ln_clean, font=title_font, fill=(0,0,0,200))
             draw.text((x, y_text), ln_clean, font=title_font, fill=(255,255,255,255))
             y_text += h + 6
-        # If extra small "Added by:" present as last line, render with small_font
-        # (We assume the last line is the "Added by:" line if it begins with "Added by:")
-        last_line = lines[-1] if lines else ""
-        if last_line.lower().startswith("added by:"):
-            w, h = draw.textsize(last_line, font=small_font)
-            x = (1280 // 2) - (w // 2) + 80
-            draw.text((x, y_text), last_line, font=small_font, fill=(200,200,200,255))
         out_path = os.path.join(THUMB_CACHE_DIR, f"{out_key}.png")
         background.save(out_path)
         return out_path
@@ -609,6 +563,35 @@ async def get_thumb_from_url_or_webpage(thumbnail_url: Optional[str], webpage: O
             except Exception:
                 pass
     return None
+
+async def _create_station_thumb(station_name: str) -> Optional[str]:
+    """
+    Generate a simple thumbnail image with station name to use for radio UI messages.
+    """
+    try:
+        key = re.sub(r"[^0-9A-Za-z_-]", "_", station_name)[:40]
+        out_path = os.path.join(THUMB_CACHE_DIR, f"station_{key}.png")
+        if os.path.isfile(out_path):
+            return out_path
+        width, height = 1280, 720
+        bg_color = (18, 18, 18)
+        im = Image.new("RGB", (width, height), bg_color)
+        draw = ImageDraw.Draw(im)
+        try:
+            title_font = ImageFont.truetype("DejaVuSans.ttf", 72)
+            small_font = ImageFont.truetype("DejaVuSans.ttf", 32)
+        except Exception:
+            title_font = ImageFont.load_default()
+            small_font = ImageFont.load_default()
+        txt = station_name
+        w, h = draw.textsize(txt, font=title_font)
+        draw.text(((width - w) / 2, (height - h) / 2 - 20), txt, font=title_font, fill=(255,255,255))
+        draw.text(((width - w) / 2, (height - h) / 2 + 50), "LIVE RADIO", font=small_font, fill=(200,200,200))
+        im.save(out_path)
+        return out_path
+    except Exception as e:
+        logging.debug(f"_create_station_thumb failed: {e}")
+        return None
 
 # ---------- DB / LOG ----------
 def init_db_sync():
@@ -1125,7 +1108,7 @@ async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
                 await result
         except Exception as e:
             logging.debug(f"_try_and_verify: call raised: {e}")
-        for attempt in range(6):
+        for attempt in range(8):
             await asyncio.sleep(0.5)
             try:
                 active = await _is_call_active(chat_id)
@@ -1218,7 +1201,7 @@ async def _start_stream_in_call(chat_id: int, stream_source: str) -> bool:
             logging.debug(f"Attempting safe_call {name} with raw stream source")
             res = await _safe_call_py_method(name, *args, **kwargs)
             logging.info(f"Attempted safe_call {name} for chat {chat_id}, result={res}")
-            for attempt in range(6):
+            for attempt in range(8):
                 await asyncio.sleep(0.5)
                 if await _is_call_active(chat_id):
                     logging.info(f"Stream started using safe_call {name} for chat {chat_id}")
@@ -1362,8 +1345,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
     """
     voice_chat_id: numeric chat id where assistant should join the voice chat (int)
     ui_chat_id: chat id where the "Now Playing" message should be posted (group id). If None, defaults to voice_chat_id.
-    info_msg: optional Message object previously sent (like "Searching...") — if provided we'll try to edit this message
-              into the player UI to avoid duplicate messages.
+    info_msg: optional Message previously sent (like "Searching...") — if provided we'll try to edit this message into the player UI.
     """
     try:
         if voice_chat_id in radio_tasks:
@@ -1381,7 +1363,6 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
         thumb_val = entry.get("thumbnail")
         title = entry.get("title") or "Unknown"
         requested_by = entry.get("requested_by")
-        # Build title overlay content: include requested_by on its own line at bottom
         overlay_title = title
         if requested_by:
             overlay_title = f"{title}\nAdded by: {requested_by}"
@@ -1394,20 +1375,16 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
             else:
                 thumb_path = await get_thumb_from_url_or_webpage(None, entry.get("webpage"), overlay_title)
 
-        # UI chat where the player will be shown
         ui_chat = ui_chat_id or voice_chat_id
 
         caption = f"🎧 {t(ui_chat, 'NOW_PLAYING', title=title)}"
-        # append requested_by in caption for visibility in chat as well
         if requested_by:
             caption = f"{caption}\n👤 Added by: {requested_by}"
 
         try:
             if info_msg and info_msg.chat and info_msg.id and info_msg.chat.id == ui_chat:
-                # Try to edit existing info_msg into a photo (preferred) to avoid duplicate messages
                 if thumb_path and os.path.isfile(thumb_path):
                     try:
-                        # Edit into a photo message
                         await bot.edit_message_media(
                             chat_id=ui_chat,
                             message_id=info_msg.id,
@@ -1416,8 +1393,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
                         )
                         msg = await bot.get_messages(ui_chat, info_msg.id)
                     except Exception as e:
-                        logging.debug(f"edit_message_media failed, will fallback to delete/send: {e}")
-                        # fallback: delete and send new
+                        logging.debug(f"edit_message_media failed, fallback delete/send: {e}")
                         try:
                             await info_msg.delete()
                         except Exception:
@@ -1429,7 +1405,6 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
                             reply_markup=player_controls_markup(ui_chat),
                         )
                 else:
-                    # no thumbnail: just edit text
                     try:
                         await bot.edit_message_text(
                             chat_id=ui_chat,
@@ -1446,7 +1421,6 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
                             pass
                         msg = await bot.send_message(ui_chat, caption, reply_markup=player_controls_markup(ui_chat))
             else:
-                # No info_msg to reuse — send new UI
                 if thumb_path and os.path.isfile(thumb_path):
                     msg = await bot.send_photo(
                         ui_chat,
@@ -1462,7 +1436,6 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
                         reply_markup=player_controls_markup(ui_chat),
                     )
         except Exception:
-            # fallback: try without thumbnail
             try:
                 msg = await bot.send_message(ui_chat, caption, reply_markup=player_controls_markup(ui_chat))
             except Exception:
@@ -1497,7 +1470,6 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
         )
 
         radio_paused.discard(voice_chat_id)
-        # schedule timer updates to UI (if we have a valid msg_id)
         if msg_id:
             radio_tasks[voice_chat_id] = asyncio.create_task(
                 update_radio_timer(voice_chat_id, ui_chat, msg_id, title, start_time, duration)
@@ -1623,6 +1595,47 @@ async def cmd_play(_, message: Message):
         except Exception:
             pass
 
+# ---------- /radio (open radio menu in group) ----------
+@bot.on_message(filters.group & filters.command(["radio"]))
+async def cmd_radio(_, message: Message):
+    chat_id = message.chat.id
+    if is_group_blocked_sync(chat_id):
+        return await message.reply_text(t(chat_id, "GROUP_BLOCKED"))
+    # ensure assistant present in this group (for immediate joining)
+    try:
+        assistant_user = await assistant.get_me()
+        assistant_id = assistant_user.id
+    except Exception:
+        assistant_id = None
+    assistant_present = False
+    if assistant_id:
+        try:
+            await assistant.get_chat_member(chat_id, assistant_id)
+            assistant_present = True
+        except Exception:
+            assistant_present = False
+    if not assistant_present:
+        if not ASSISTANT_SESSION:
+            return await message.reply_text("Assistant session is not configured. Set ASSISTANT_SESSION and restart.")
+        try:
+            invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+            invite_link = invite.invite_link
+            try:
+                await assistant.join_chat(invite_link)
+                assistant_present = True
+                try:
+                    await bot.send_message(chat_id, t(chat_id, "ASSISTANT_JOIN_INFO"), disable_web_page_preview=True)
+                except Exception:
+                    pass
+            except Exception:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
+                await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"), reply_markup=kb)
+                return
+        except Exception:
+            return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
+    kb = radio_buttons(0)
+    await message.reply_text("📻 Radio Stations - choose one:", reply_markup=kb)
+
 # ---------- /conet (link group -> channel) ----------
 @bot.on_message(filters.group & filters.command(["conet", "conlink"]))
 async def cmd_conet(_, message: Message):
@@ -1673,7 +1686,6 @@ async def cmd_cplay(_, message: Message):
     channel_ident = get_linked_channel(group_id)
     if not channel_ident:
         return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
-    # resolve numeric id (bot.get_chat handles @username or numeric)
     try:
         chat_obj = await bot.get_chat(channel_ident)
         voice_chat_id = chat_obj.id
@@ -1681,7 +1693,6 @@ async def cmd_cplay(_, message: Message):
         logging.debug(f"Failed to resolve linked channel identifier {channel_ident}: {e}")
         return await message.reply_text("Failed to resolve linked channel. Ensure the channel exists and the bot has access.")
 
-    # ensure assistant present in target channel
     try:
         assistant_user = await assistant.get_me()
         assistant_id = assistant_user.id
@@ -1760,7 +1771,6 @@ async def cmd_cplay(_, message: Message):
     if voice_chat_id not in radio_queue:
         radio_queue[voice_chat_id] = []
     current_state = radio_state.get(voice_chat_id)
-    # ui_chat_id for this play should be the group that linked channel (so user sees UI in group)
     ui_chat_for_ui = group_id
     if current_state and not current_state.get("paused"):
         radio_queue[voice_chat_id].append(entry)
@@ -1775,11 +1785,9 @@ async def cmd_cplay(_, message: Message):
     if ok:
         try:
             if info_msg:
-                # info_msg has been edited into the UI by play_entry; if not, ensure group has a short confirmation
                 await info_msg.edit_text(f"Now playing in channel (via assistant): {entry['title']}")
         except Exception:
             pass
-        # avoid an extra reply; the UI is shown in the group. Only send minimal log reply if needed
         log_event_sync("cplay_started", {"group_id": group_id, "channel": voice_chat_id, "title": entry["title"], "by": message.from_user.id})
     else:
         try:
@@ -2026,7 +2034,6 @@ async def play_radio_station(_, query: CallbackQuery):
     station = query.data.replace("radio_play_", "")
     url = RADIO_STATION.get(station)
     user = query.from_user
-    # If this UI belongs to a group which linked a channel, play into the linked channel and show UI in the group.
     linked = get_linked_channel(ui_chat)
     if linked:
         try:
@@ -2038,7 +2045,6 @@ async def play_radio_station(_, query: CallbackQuery):
             return
         ui_chat_for_ui = ui_chat
     else:
-        # no linked channel: treat UI chat as the voice chat
         voice_chat = ui_chat
         ui_chat_for_ui = ui_chat
 
@@ -2108,12 +2114,35 @@ async def play_radio_station(_, query: CallbackQuery):
             await safe_query_answer(query, "Failed to start radio", show_alert=True)
             return
 
-        msg = await query.message.edit_caption(
-            caption=f"🎧 {station}\n🔴 LIVE Radio",
-            reply_markup=player_controls_markup(ui_chat_for_ui),
-        )
+        # ensure station thumbnail present
+        thumb = await _create_station_thumb(station)
+        try:
+            msg = await query.message.edit_caption(
+                caption=f"🎧 {station}\n🔴 LIVE Radio",
+                reply_markup=player_controls_markup(ui_chat_for_ui),
+            )
+            # replace with photo if possible to show thumbnail
+            if thumb and os.path.isfile(thumb):
+                try:
+                    # delete edited caption message and send a photo with caption to show artwork
+                    try:
+                        await query.message.delete()
+                    except Exception:
+                        pass
+                    sent = await bot.send_photo(ui_chat_for_ui, photo=thumb, caption=f"🎧 {station}\n🔴 LIVE Radio", reply_markup=player_controls_markup(ui_chat_for_ui))
+                    msg = sent
+                except Exception:
+                    pass
+        except Exception:
+            # fallback: try to send photo
+            try:
+                msg = await bot.send_photo(ui_chat_for_ui, photo=thumb if thumb and os.path.isfile(thumb) else "https://files.catbox.moe/08qhi9.jpg", caption=f"🎧 {station}\n🔴 LIVE Radio", reply_markup=player_controls_markup(ui_chat_for_ui))
+            except Exception:
+                msg = None
+
         start_time = time.time()
-        store_play_state(voice_chat, ui_chat_for_ui, station, url, msg.id, start_time, elapsed=0.0, paused=False, duration=None)
+        msg_id = msg.id if msg else 0
+        store_play_state(voice_chat, ui_chat_for_ui, station, url, msg_id, start_time, elapsed=0.0, paused=False, duration=None)
         radio_paused.discard(voice_chat)
         await safe_query_answer(query, f"Now playing {station} via assistant!", show_alert=False)
         log_event_sync("radio_started", {"voice_chat": voice_chat, "station": station, "by": user.id if user else None})
