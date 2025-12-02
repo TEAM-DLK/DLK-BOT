@@ -181,9 +181,9 @@ TRANSLATIONS = {
         "ADDED_RADIO_QUEUE": "➕ Added to radio queue: {title}",
         "NOW_PLAYING": "▶️ Now playing: {title}",
         "NOW_PLAYING_QUEUE": "⏭️ Now playing: {title}",
-        "PREPARING_AUDIO_REPLY": "Preparing your audio reply...",
-        "PLAY_USAGE": "Usage: /play <YouTube url or search terms> OR reply to an audio/voice file and use /play",
-        "SEARCHING_STREAM": "🔎 Searching and preparing stream...",
+        "PREPARING_AUDIO_REPLY": "🎯",
+        "PLAY_USAGE": "/play <YouTube url or search terms> OR reply to an audio/voice file and use /play",
+        "SEARCHING_STREAM": "🔎",
         "YTDLP_FAIL": "❌ Could not extract audio stream. Ensure yt-dlp is installed and cookies.txt set if needed.",
         "FAILED_PLAY_REQUEST": "❌ Failed to play the requested track.",
         "FAILED_PLAY_NEXT": "Failed to play next track: {title}",
@@ -235,8 +235,7 @@ TRANSLATIONS = {
             "- /cplay : play into linked channel\n"
             "- /cradio : radio into linked channel\n"
             "- /cplend /crend : stop linked channel playback\n"
-            "- /pause /resume /stop /skip : playback controls (admins)\n\n"
-            "Owner-only: /bl (block group), /unbl (unblock group)\n"
+            "- pause resume stop skip : playback controls (admins)\n\n"
             "Use /lang to change the language."
         ),
         "HOME_TEXT": "👋 DLK BOT Home\n\nUse the buttons to navigate: Menu shows radio stations. Help explains commands.",
@@ -250,8 +249,7 @@ TRANSLATIONS = {
             "- Use /cplend or /crend to end playback in linked channel.\n"
             "- Use /rpush to add a station or url to the queue.\n"
             "- Use /rskip to skip to next queued station, /rend to end radio, /rresume to resume (admins only).\n"
-            "- Admins can use pause/resume/skip/stop via the inline buttons.\n"
-            "- Owner-only commands: /bl and /unbl in a group to block/unblock the group.\n"
+            "- Admins can use pause resume skip stop via the inline buttons.\n"
             "- Use /lang to change bot language in this chat.\n"
         ),
     }
@@ -804,8 +802,8 @@ def player_controls_markup(ui_chat_id: int):
             InlineKeyboardButton("❌", callback_data="player_delete"),
         ]
     bottom = [
-        InlineKeyboardButton("👨‍💻 Dev", url=DEV_LINK),
-        InlineKeyboardButton("💬 Support", url=SUPPORT_LINK),
+        InlineKeyboardButton("👨‍💻", url=DEV_LINK),
+        InlineKeyboardButton("💬", url=SUPPORT_LINK),
     ]
     return InlineKeyboardMarkup([controls, bottom])
 
@@ -1400,7 +1398,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
                             pass
                         msg = await bot.send_photo(
                             ui_chat,
-                            photo=thumb_path if os.path.isfile(thumb_path) else "https://files.catbox.moe/08qhi9.jpg",
+                            photo=thumb_path if os.path.isfile(thumb_path) else "https://files.catbox.moe/fzbgmi.jpg",
                             caption=caption,
                             reply_markup=player_controls_markup(ui_chat),
                         )
@@ -1431,7 +1429,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
                 else:
                     msg = await bot.send_photo(
                         ui_chat,
-                        photo="https://files.catbox.moe/08qhi9.jpg",
+                        photo="https://files.catbox.moe/fzbgmi.jpg",
                         caption=caption,
                         reply_markup=player_controls_markup(ui_chat),
                     )
@@ -1439,7 +1437,7 @@ async def play_entry(voice_chat_id: int, entry: dict, reply_message: Optional[Me
             try:
                 msg = await bot.send_message(ui_chat, caption, reply_markup=player_controls_markup(ui_chat))
             except Exception:
-                logging.debug("Failed to send player UI message")
+                logging.debug("Failed to send player")
                 msg = None
 
         duration = entry.get("duration")
@@ -1648,8 +1646,8 @@ async def cmd_conet(_, message: Message):
     if not args:
         cur = get_linked_channel(chat_id)
         if cur:
-            return await message.reply_text(f"This group is linked to channel: {cur}\nUse /conet unlink to remove.")
-        return await message.reply_text("Usage: /conet <@channelusername or -100...id> OR /conet unlink")
+            return await message.reply_text(f"This group is linked to channel: {cur}\n/conet unlink to remove.")
+        return await message.reply_text("/conet <@channelusername or -100...id> OR /conet unlink")
     if args.lower() in ("unlink", "remove", "none"):
         set_linked_channel(chat_id, None)
         await message.reply_text("✅ Unlinked channel from this group.")
@@ -1685,7 +1683,7 @@ async def cmd_cplay(_, message: Message):
         return await message.reply_text(t(group_id, "GROUP_BLOCKED"))
     channel_ident = get_linked_channel(group_id)
     if not channel_ident:
-        return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
+        return await message.reply_text("No channel linked. /conet <@channelusername or -100id> to link a channel.")
     try:
         chat_obj = await bot.get_chat(channel_ident)
         voice_chat_id = chat_obj.id
@@ -1743,7 +1741,7 @@ async def cmd_cplay(_, message: Message):
         entry = await prepare_entry_from_reply(message.reply_to_message)
         if entry:
             entry["requested_by"] = (user.first_name or user.username or str(user.id)) if user else None
-            info_msg = await message.reply_text("Preparing audio to play in linked channel...")
+            info_msg = await message.reply_text("🎲")
     if not entry:
         query = None
         if len(message.command) > 1:
@@ -1751,8 +1749,8 @@ async def cmd_cplay(_, message: Message):
         elif message.reply_to_message and message.reply_to_message.text:
             query = message.reply_to_message.text
         if not query:
-            return await message.reply_text("Usage: /cplay <YouTube url or search terms> OR reply to audio in this group and use /cplay")
-        info_msg = await message.reply_text("Searching and preparing stream for linked channel...")
+            return await message.reply_text("/cplay <YouTube url or search terms> OR reply to audio in this group and use /cplay")
+        info_msg = await message.reply_text("🎲")
         info = extract_audio_url(query)
         if info is None or not info.get("stream_url"):
             await info_msg.edit_text(t(group_id, "YTDLP_FAIL"))
@@ -1803,7 +1801,7 @@ async def cmd_cradio(_, message: Message):
     group_id = message.chat.id
     channel_ident = get_linked_channel(group_id)
     if not channel_ident:
-        return await message.reply_text("No channel linked. Use /conet <@channelusername or -100id> to link a channel.")
+        return await message.reply_text("No channel linked. /conet <@channelusername or -100id> to link a channel.")
     kb = radio_buttons(0)
     await message.reply_text(f"📻 Radio Stations - choose one to play in linked channel {channel_ident} (UI will be shown here):", reply_markup=kb)
 
@@ -2136,7 +2134,7 @@ async def play_radio_station(_, query: CallbackQuery):
         except Exception:
             # fallback: try to send photo
             try:
-                msg = await bot.send_photo(ui_chat_for_ui, photo=thumb if thumb and os.path.isfile(thumb) else "https://files.catbox.moe/08qhi9.jpg", caption=f"🎧 {station}\n🔴 LIVE Radio", reply_markup=player_controls_markup(ui_chat_for_ui))
+                msg = await bot.send_photo(ui_chat_for_ui, photo=thumb if thumb and os.path.isfile(thumb) else "https://files.catbox.moe/fzbgmi.jpg", caption=f"🎧 {station}\n🔴 LIVE Radio", reply_markup=player_controls_markup(ui_chat_for_ui))
             except Exception:
                 msg = None
 
