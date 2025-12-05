@@ -344,7 +344,7 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
     target = query if looks_like_url(query) else f"ytsearch1:{query}"
     # Prefer audio-only formats (m4a/aac/mp3) over video formats
     ydl_opts = {
-        "format": "bestaudio[ext=m4a]/bestaudio/best",
+        "format": "bestaudio/best",
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
