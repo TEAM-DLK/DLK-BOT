@@ -1,7 +1,5 @@
 # DLK.py - Updated (2025-12-02) - audio-only, /radio handler, station thumbnails, UI fixes
-# Repo file: https://github.com/gamingdhana49-dotcom/bot/blob/3c9052072800f77edd442951851671b67d52822d/DLK.py
-#
-# See assistant message for summary of changes.
+# plus: admin-only player buttons, /skip and /end commands added, yt-dlp forced to prefer audio-only formats.
 
 import os
 import re
@@ -231,7 +229,7 @@ TRANSLATIONS = {
             "👋 Welcome to DLK BOT!\n\n"
             "Commands (groups):\n"
             "- /radio : stations\n"
-            "- /play <query|URL> or reply to audio with /play : play music\n"
+            "- /play <query|URL> or reply to an audio/voice file and use /play : play music\n"
             "- /cplay : play into linked channel\n"
             "- /cradio : radio into linked channel\n"
             "- /cplend /crend : stop linked channel playback\n"
@@ -344,13 +342,16 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
         logging.warning("yt_dlp not installed.")
         return None
     target = query if looks_like_url(query) else f"ytsearch1:{query}"
+    # Prefer audio-only formats (m4a/aac/mp3) over video formats
     ydl_opts = {
-        "format": "bestaudio/best",
+        "format": "bestaudio[ext=m4a]/bestaudio/best",
         "quiet": True,
         "no_warnings": True,
         "skip_download": True,
         "noplaylist": True,
         "extract_flat": False,
+        "prefer_ffmpeg": True,
+        # ensure we get direct URL (some extractors need "source_address" but skip here)
     }
     if YT_DLP_COOKIES and os.path.isfile(YT_DLP_COOKIES):
         ydl_opts["cookiefile"] = YT_DLP_COOKIES
@@ -787,6 +788,7 @@ def radio_buttons(page: int = 0, per_page: int = 6):
     return InlineKeyboardMarkup(buttons)
 
 def player_controls_markup(ui_chat_id: int):
+    # Buttons are same, but callbacks always validate admin permissions at handler level.
     if ui_chat_id in radio_paused:
         controls = [
             InlineKeyboardButton("▷", callback_data="radio_resume"),
@@ -1592,6 +1594,64 @@ async def cmd_play(_, message: Message):
                 await info_msg.edit_text(t(chat_id, "FAILED_PLAY_REQUEST"))
         except Exception:
             pass
+
+# ---------- /skip and /end (group commands) ----------
+@bot.on_message(filters.group & filters.command(["skip", "rskip", "next"]))
+async def cmd_skip(_, message: Message):
+    ui_chat = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(ui_chat, "ONLY_ADMINS_SKIP"))
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
+    q = radio_queue.get(voice_chat, [])
+    if not q:
+        # no queue: stop playback
+        await leave_voice_chat(voice_chat)
+        state = radio_state.get(voice_chat)
+        ui_chat_id = state.get("ui_chat_id") if state else ui_chat
+        msg_id = state.get("msg_id") if state else None
+        if msg_id:
+            try:
+                await bot.edit_message_caption(chat_id=ui_chat_id, message_id=msg_id, caption=t(ui_chat_id, "BOT_STOPPED"), reply_markup=None)
+            except Exception:
+                pass
+        await message.reply_text(t(ui_chat, "SKIPPED_NO_QUEUE"))
+        log_event_sync("music_skipped_stop", {"chat_id": voice_chat, "by": message.from_user.id if message.from_user else None})
+        return
+    next_entry = q.pop(0)
+    radio_queue[voice_chat] = q
+    if voice_chat in track_watchers:
+        try:
+            track_watchers[voice_chat].cancel()
+        except Exception:
+            pass
+        track_watchers.pop(voice_chat, None)
+    ok = await play_entry(voice_chat, next_entry, ui_chat_id=ui_chat)
+    if ok:
+        try:
+            await message.reply_text(t(ui_chat, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        except Exception:
+            pass
+        log_event_sync("music_skipped", {"chat_id": voice_chat, "title": next_entry["title"], "by": message.from_user.id if message.from_user else None})
+    else:
+        await message.reply_text(t(ui_chat, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
+
+@bot.on_message(filters.group & filters.command(["end", "stop"]))
+async def cmd_end(_, message: Message):
+    ui_chat = message.chat.id
+    if not await dlk_privilege_validator(message):
+        return await message.reply_text(t(ui_chat, "ONLY_ADMINS_STOP"))
+    voice_chat = ui_to_voice_chat(ui_chat) or ui_chat
+    state = radio_state.get(voice_chat)
+    ui_chat_id = state.get("ui_chat_id") if state else ui_chat
+    msg_id = state.get("msg_id") if state else None
+    await leave_voice_chat(voice_chat)
+    if msg_id:
+        try:
+            await bot.edit_message_caption(chat_id=ui_chat_id, message_id=msg_id, caption=t(ui_chat_id, "BOT_STOPPED"), reply_markup=None)
+        except Exception:
+            pass
+    await message.reply_text(t(ui_chat, "RADIO_ENDED"))
+    log_event_sync("music_end_cmd", {"chat_id": voice_chat, "by": message.from_user.id if message.from_user else None})
 
 # ---------- /radio (open radio menu in group) ----------
 @bot.on_message(filters.group & filters.command(["radio"]))
