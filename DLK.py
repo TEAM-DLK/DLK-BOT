@@ -638,64 +638,108 @@ def unblock_group_sync(chat_id: int):
         return
     db.blocked.delete_one({"chat_id": chat_id})
 
+# Replace your existing dlk_privilege_validator with this improved version.
+
+# Optional: support multiple owners via OWNER_IDS env var (comma-separated)
+OWNER_IDS_RAW = os.environ.get("OWNER_IDS", "").strip()
+if OWNER_IDS_RAW:
+    try:
+        OWNER_IDS = [int(x.strip()) for x in OWNER_IDS_RAW.split(",") if x.strip()]
+    except Exception:
+        OWNER_IDS = []
+else:
+    OWNER_IDS = []
+
 async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> bool:
     """
-    Return True if the subject (Message or CallbackQuery) was performed by:
-      - the configured OWNER_ID (bot owner),
-      - a chat administrator (creator/administrator),
-      - or an anonymous admin (sender_chat present and has admin status).
+    Robust privilege validator.
 
-    Works for both Message and CallbackQuery objects.
+    Returns True when:
+      - action performed by OWNER_ID or any id in OWNER_IDS, OR
+      - user is chat administrator (creator/administrator), OR
+      - sender_chat (anonymous admin / channel-as-admin) has admin/creator status.
+
+    Works with both Message and CallbackQuery objects.
     """
     try:
         # Normalize objects
         if isinstance(subject, CallbackQuery):
+            user = subject.from_user  # may be None in rare cases
+            # callback.message should exist for inline buttons
+            msg = getattr(subject, "message", None)
+            if not msg:
+                return False
+            chat = msg.chat
+            sender_chat = getattr(msg, "sender_chat", None)
+        else:  # Message
             user = subject.from_user
-            chat = subject.message.chat
-            sender_chat = getattr(subject.message, "sender_chat", None)
-        else:
-            user = subject.from_user
+            msg = subject
             chat = subject.chat
             sender_chat = getattr(subject, "sender_chat", None)
 
-        # Quick owner check (works when from_user is present)
+        # Quick owner checks (works if from_user present)
         try:
-            if user and OWNER_ID and getattr(user, "id", None) == int(OWNER_ID):
-                return True
+            if user and getattr(user, "id", None) is not None:
+                uid = int(user.id)
+                if OWNER_ID and uid == int(OWNER_ID):
+                    return True
+                if OWNER_IDS and uid in OWNER_IDS:
+                    return True
         except Exception:
-            # in case OWNER_ID is not int-parsable for some reason
+            # ignore parsing issues and continue checks
             pass
 
-        # Do not allow in private chats (unless you want different behaviour)
+        # Also accept owner if owner posted as sender_chat (rare)
+        try:
+            if sender_chat and hasattr(sender_chat, "id"):
+                sc_id = int(sender_chat.id)
+                if OWNER_ID and sc_id == int(OWNER_ID):
+                    return True
+                if OWNER_IDS and sc_id in OWNER_IDS:
+                    return True
+        except Exception:
+            pass
+
+        # Private chats: treat as non-admin (unless owner via direct message)
         if chat.type == "private":
+            # allow direct owner DM (if the DM user is owner)
+            try:
+                if user and getattr(user, "id", None) is not None:
+                    uid = int(user.id)
+                    if OWNER_ID and uid == int(OWNER_ID):
+                        return True
+                    if OWNER_IDS and uid in OWNER_IDS:
+                        return True
+            except Exception:
+                pass
             return False
 
-        # If sender_chat exists (anonymous admin posting as channel), check its membership/status
+        # If sender_chat exists (anonymous admin / channel), try to check its status
         if sender_chat:
             try:
+                # sender_chat.id is typically a negative channel id; get_chat_member accepts it
                 member = await bot.get_chat_member(chat.id, sender_chat.id)
                 status = (getattr(member, "status", "") or "").lower()
                 if status in ("administrator", "creator"):
                     return True
-            except Exception:
-                # Some Telegram setups may disallow get_chat_member for sender_chat; ignore and continue.
-                pass
+            except Exception as e:
+                # Some Telegram setups may not allow get_chat_member for sender_chat
+                logging.debug(f"dlk_privilege_validator: sender_chat check failed: {e}")
 
         # If a user object exists, check the user's role in the chat
-        if user:
+        if user and getattr(user, "id", None) is not None:
             try:
                 member = await bot.get_chat_member(chat.id, user.id)
                 status = (getattr(member, "status", "") or "").lower()
                 if status in ("administrator", "creator"):
                     return True
-            except Exception:
-                # Could fail for many reasons (bot kicked, network); fall through to False.
-                pass
+            except Exception as e:
+                logging.debug(f"dlk_privilege_validator: user chat member check failed: {e}")
 
-        # Fallback: not an admin / not owner
+        # If we reached here, user is not admin/owner
         return False
     except Exception as e:
-        logging.warning(f"Privilege check failed: {e}")
+        logging.warning(f"Privilege check failed (unexpected): {e}")
         return False
 
 # ---------- UI ----------
