@@ -1,4 +1,4 @@
-# dlk_radio_bot.py
+# dlk_radio_bot.py (patched)
 import os
 import re
 import time
@@ -68,6 +68,7 @@ API_ID = int(os.environ.get("API_ID", "") or "")
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION", "")
+# OWNER_ID removed from privilege check; still keep env var if you want, but it's not used for permission gating
 OWNER_ID = int(os.getenv("OWNER_ID", "") or 0)
 
 MONGO_URI = os.environ.get("MONGO_URI")
@@ -526,10 +527,10 @@ def log_event_sync(event_type: str, data: dict):
 async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> bool:
     """
     Returns True for:
-      - Owner (OWNER_ID)
       - Chat administrators (administrator or creator)
       - Anonymous admin (sender_chat is admin)
     For private chats returns False (admins only apply to groups).
+    NOTE: OWNER_ID based bypass removed to ensure commands rely on group admin status.
     """
     try:
         if isinstance(subject, CallbackQuery):
@@ -540,8 +541,6 @@ async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> boo
             user = subject.from_user
             chat = subject.chat
             sender_chat = getattr(subject, "sender_chat", None)
-        if user and user.id == OWNER_ID:
-            return True
         if chat.type == "private":
             return False
         if user:
@@ -607,6 +606,37 @@ def player_controls_markup(chat_id: int):
     ]
     return InlineKeyboardMarkup([controls, bottom])
 
+# ---------- MESSAGE DELETION HELPERS ----------
+async def delete_message_after(chat_id: int, message_id: int, delay: int = 5):
+    try:
+        await asyncio.sleep(delay)
+        try:
+            await bot.delete_messages(chat_id, message_id)
+        except Exception:
+            # fallback to single delete
+            try:
+                await bot.delete_messages(chat_id, message_id)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+async def send_temp_reply(chat_id: int, text: str, reply_to: Optional[int] = None, delay: int = 6):
+    try:
+        if reply_to:
+            msg = await bot.send_message(chat_id, text, reply_to_message_id=reply_to)
+        else:
+            msg = await bot.send_message(chat_id, text)
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=delay))
+        return msg
+    except Exception:
+        try:
+            msg = await bot.send_message(chat_id, text)
+            asyncio.create_task(delete_message_after(chat_id, msg.id, delay=delay))
+            return msg
+        except Exception:
+            return None
+
 # ---------- TIMER / VC HELPERS ----------
 async def update_radio_timer(chat_id: int, msg_id: int, title: str, start_time: float, track_duration: int):
     while True:
@@ -655,10 +685,18 @@ async def _force_leave_call(chat_id: int):
         except Exception as e2:
             logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
 
-async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
+async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True, delete_messages: bool = True):
+    """
+    Stops playback, cancels timers/watchers, and optionally deletes the 'Now Playing' message.
+    """
     try:
+        # capture state before we pop it
+        state = radio_state.get(chat_id)
         if chat_id in radio_tasks:
-            radio_tasks[chat_id].cancel()
+            try:
+                radio_tasks[chat_id].cancel()
+            except Exception:
+                pass
             radio_tasks.pop(chat_id, None)
         if cancel_watchers and chat_id in track_watchers:
             try:
@@ -668,11 +706,26 @@ async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True):
             track_watchers.pop(chat_id, None)
         if chat_id in radio_paused:
             radio_paused.discard(chat_id)
+        # remove in-memory state before attempting leave (avoid races)
         radio_state.pop(chat_id, None)
         try:
             await _force_leave_call(chat_id)
         except Exception as e:
             logging.debug(f"force leave vc failed {chat_id}: {e}")
+        # attempt to delete playing message if requested
+        if delete_messages and state:
+            try:
+                msg_id = state.get("msg_id")
+                if msg_id:
+                    try:
+                        await bot.delete_messages(chat_id, msg_id)
+                    except Exception:
+                        try:
+                            await bot.delete_messages(chat_id, msg_id)
+                        except Exception:
+                            pass
+            except Exception as e:
+                logging.debug(f"Failed to delete playback message for {chat_id}: {e}")
     except Exception as e:
         logging.warning(f"leave_voice_chat failed {chat_id}: {e}")
 
@@ -779,18 +832,14 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
             log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
         else:
             try:
-                await leave_voice_chat(chat_id, cancel_watchers=False)
+                # delete the now playing message if exists
+                try:
+                    await bot.delete_messages(chat_id, msg_id)
+                except Exception:
+                    pass
+                await leave_voice_chat(chat_id, cancel_watchers=False, delete_messages=False)
             except Exception:
                 pass
-            try:
-                await bot.edit_message_caption(
-                    chat_id=chat_id,
-                    message_id=msg_id,
-                    caption=t(chat_id, "BOT_STOPPED"),
-                    reply_markup=None,
-                )
-            except Exception as e:
-                logging.debug(f"track_watcher edit caption failed {chat_id}/{msg_id}: {e}")
             log_event_sync("music_track_autostop", {"chat_id": chat_id})
     except asyncio.CancelledError:
         return
@@ -801,7 +850,10 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
 async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None):
     try:
         if chat_id in radio_tasks:
-            radio_tasks[chat_id].cancel()
+            try:
+                radio_tasks[chat_id].cancel()
+            except Exception:
+                pass
             radio_tasks.pop(chat_id, None)
         stream_source = entry["stream_url"]
         await _safe_call_py_method("play", chat_id, MediaStream(stream_source))
@@ -907,10 +959,14 @@ async def cmd_play(_, message: Message):
                     pass
             except Exception:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
-                await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"), reply_markup=kb)
+                msg = await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"), reply_markup=kb)
+                # auto-delete the invite message after short delay
+                asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
                 return
         except Exception:
-            return await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
+            msg = await message.reply_text(t(chat_id, "ASSISTANT_NOT_IN_GROUP"))
+            asyncio.create_task(delete_message_after(chat_id, msg.id, delay=10))
+            return
     entry = None
     info_msg = None
     if message.reply_to_message:
@@ -924,11 +980,17 @@ async def cmd_play(_, message: Message):
         elif message.reply_to_message and message.reply_to_message.text:
             query = message.reply_to_message.text
         if not query:
-            return await message.reply_text(t(chat_id, "PLAY_USAGE"))
+            msg = await message.reply_text(t(chat_id, "PLAY_USAGE"))
+            asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
+            return
         info_msg = await message.reply_text(t(chat_id, "SEARCHING_STREAM"))
         info = extract_audio_url(query)
         if info is None or not info.get("stream_url"):
-            await info_msg.edit_text(t(chat_id, "YTDLP_FAIL"))
+            try:
+                await info_msg.edit_text(t(chat_id, "YTDLP_FAIL"))
+            except Exception:
+                pass
+            asyncio.create_task(delete_message_after(chat_id, info_msg.id, delay=10))
             return
         entry = {
             "title": info.get("title"),
@@ -946,6 +1008,7 @@ async def cmd_play(_, message: Message):
         try:
             if info_msg:
                 await info_msg.edit_text(t(chat_id, "ADDED_QUEUE", title=entry["title"]))
+                asyncio.create_task(delete_message_after(chat_id, info_msg.id, delay=8))
         except Exception:
             pass
         log_event_sync("music_queued", {"chat_id": chat_id, "title": entry["title"], "by": user.id if user else None})
@@ -955,12 +1018,14 @@ async def cmd_play(_, message: Message):
         try:
             if info_msg:
                 await info_msg.edit_text(t(chat_id, "NOW_PLAYING", title=entry["title"]))
+                asyncio.create_task(delete_message_after(chat_id, info_msg.id, delay=6))
         except Exception:
             pass
     else:
         try:
             if info_msg:
                 await info_msg.edit_text(t(chat_id, "FAILED_PLAY_REQUEST"))
+                asyncio.create_task(delete_message_after(chat_id, info_msg.id, delay=8))
         except Exception:
             pass
 
@@ -969,11 +1034,14 @@ async def cmd_play(_, message: Message):
 async def cmd_skip(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_SKIP"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS_SKIP"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     q = radio_queue.get(chat_id, [])
     if not q:
         await leave_voice_chat(chat_id)
-        await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE"))
+        msg = await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("music_skipped_stop", {"chat_id": chat_id, "by": message.from_user.id if message.from_user else None})
         return
     next_entry = q.pop(0)
@@ -986,45 +1054,45 @@ async def cmd_skip(_, message: Message):
         track_watchers.pop(chat_id, None)
     ok = await play_entry(chat_id, next_entry)
     if ok:
-        await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        msg = await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("music_skipped", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id if message.from_user else None})
     else:
-        await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
+        msg = await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
 
 @bot.on_message(filters.group & filters.command(["queue", "q"]))
 async def cmd_queue(_, message: Message):
     chat_id = message.chat.id
     q = radio_queue.get(chat_id, [])
     if not q:
-        return await message.reply_text(t(chat_id, "QUEUE_EMPTY"))
+        msg = await message.reply_text(t(chat_id, "QUEUE_EMPTY"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     text = t(chat_id, "QUEUE_HEADER")
     for i, item in enumerate(q[:10], start=1):
         text += f"{i}. {item.get('title')}\n"
-    await message.reply_text(text)
+    msg = await message.reply_text(text)
+    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
 
 @bot.on_message(filters.group & filters.command(["stop", "end"]))
 async def general_stop_handler(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS_STOP"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
 
     state = radio_state.get(chat_id)
     msg_id = state.get("msg_id") if state else None
 
+    # leave and delete the playback message
     await leave_voice_chat(chat_id)
 
-    if msg_id:
-        try:
-            await bot.edit_message_caption(
-                chat_id=chat_id,
-                message_id=msg_id,
-                caption=t(chat_id, "BOT_STOPPED"),
-                reply_markup=None,
-            )
-        except Exception:
-            pass
+    # send a short confirmation and auto-delete it
+    confirm = await message.reply_text(t(chat_id, "BOT_STOPPED"))
+    asyncio.create_task(delete_message_after(chat_id, confirm.id, delay=6))
 
-    await message.reply_text(t(chat_id, "BOT_STOPPED"))
     log_event_sync("radio_stopped_text", {"chat_id": chat_id, "by": message.from_user.id if message.from_user else None})
 
 # ---------- RADIO COMMANDS ----------
@@ -1032,30 +1100,38 @@ async def general_stop_handler(_, message: Message):
 async def cmd_radio_menu(_, message: Message):
     chat_id = message.chat.id
     kb = radio_buttons(0)
-    await message.reply_text("📻 Radio Stations - choose one:", reply_markup=kb)
+    msg = await message.reply_text("📻 Radio Stations - choose one:", reply_markup=kb)
+    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=20))
 
 @bot.on_message(filters.group & filters.command(["rend"]))
 async def cmd_rend(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_END"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_END"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     try:
         await leave_voice_chat(chat_id)
-        await message.reply_text(t(chat_id, "RADIO_ENDED"))
+        msg = await message.reply_text(t(chat_id, "RADIO_ENDED"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("radio_rend", {"chat_id": chat_id, "by": message.from_user.id if message.from_user else None})
     except Exception as e:
         logging.warning(f"cmd_rend failed: {e}")
-        await message.reply_text(t(chat_id, "RADIO_START_FAIL", error=str(e)))
+        errmsg = await message.reply_text(t(chat_id, "RADIO_START_FAIL", error=str(e)))
+        asyncio.create_task(delete_message_after(chat_id, errmsg.id, delay=10))
 
 @bot.on_message(filters.group & filters.command(["rskip"]))
 async def cmd_rskip(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_SKIP"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_SKIP"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     q = radio_queue.get(chat_id, [])
     if not q:
         await leave_voice_chat(chat_id)
-        await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE"))
+        msg = await message.reply_text(t(chat_id, "SKIPPED_NO_QUEUE"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("radio_rskip_stop", {"chat_id": chat_id, "by": message.from_user.id if message.from_user else None})
         return
     next_entry = q.pop(0)
@@ -1068,23 +1144,29 @@ async def cmd_rskip(_, message: Message):
         track_watchers.pop(chat_id, None)
     ok = await play_entry(chat_id, next_entry)
     if ok:
-        await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        msg = await message.reply_text(t(chat_id, "NOW_PLAYING_QUEUE", title=next_entry["title"]))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("radio_rskip", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id if message.from_user else None})
     else:
-        await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT_RADIO", title=next_entry.get("title")))
+        msg = await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT_RADIO", title=next_entry.get("title")))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
 
 @bot.on_message(filters.group & filters.command(["rpush"]))
 async def cmd_rpush(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     args = None
     if len(message.command) > 1:
         args = message.text.split(None, 1)[1].strip()
     if not args:
-        return await message.reply_text(
+        msg = await message.reply_text(
             "Usage: /rpush <station_name or stream_url>\nExample: /rpush SirasaFM OR /rpush https://stream.example.com/live"
         )
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
+        return
     station_name = args
     stream_url = None
     title = station_name
@@ -1101,7 +1183,9 @@ async def cmd_rpush(_, message: Message):
                 title = k
                 break
     if not stream_url:
-        return await message.reply_text("Could not find station or invalid URL. Provide a valid station name or URL.")
+        msg = await message.reply_text("Could not find station or invalid URL. Provide a valid station name or URL.")
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=10))
+        return
     entry = {
         "title": title,
         "stream_url": stream_url,
@@ -1113,17 +1197,22 @@ async def cmd_rpush(_, message: Message):
     if chat_id not in radio_queue:
         radio_queue[chat_id] = []
     radio_queue[chat_id].append(entry)
-    await message.reply_text(t(chat_id, "ADDED_RADIO_QUEUE", title=title))
+    msg = await message.reply_text(t(chat_id, "ADDED_RADIO_QUEUE", title=title))
+    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
     log_event_sync("radio_rpush", {"chat_id": chat_id, "title": title, "by": message.from_user.id if message.from_user else None})
 
 @bot.on_message(filters.group & filters.command(["rresume", "rremuse"]))
 async def cmd_rresume(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_RESUME"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS_RADIO_RESUME"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     state = radio_state.get(chat_id)
     if not state:
-        return await message.reply_text(t(chat_id, "NOTHING_TO_RESUME"))
+        msg = await message.reply_text(t(chat_id, "NOTHING_TO_RESUME"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     try:
         await _safe_call_py_method("resume_stream", chat_id)
         await _safe_call_py_method("resume", chat_id)
@@ -1158,11 +1247,13 @@ async def cmd_rresume(_, message: Message):
             await bot.edit_message_reply_markup(chat_id, state.get("msg_id"), reply_markup=player_controls_markup(chat_id))
         except Exception:
             pass
-        await message.reply_text(t(chat_id, "RADIO_RESUMED"))
+        msg = await message.reply_text(t(chat_id, "RADIO_RESUMED"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("radio_resumed_cmd", {"chat_id": chat_id, "by": message.from_user.id if message.from_user else None})
     except Exception as e:
         logging.debug(f"cmd_rresume failed: {e}")
-        await message.reply_text(t(chat_id, "FAILED_RESUME"))
+        msg = await message.reply_text(t(chat_id, "FAILED_RESUME"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
 
 # ---------- CALLBACK HANDLERS ----------
 @bot.on_callback_query(filters.regex("^music_skip$"))
@@ -1174,12 +1265,15 @@ async def cb_music_skip(_, query: CallbackQuery):
     if not q:
         await leave_voice_chat(chat_id)
         try:
-            await query.message.edit_caption(
-                caption=t(chat_id, "MUSIC_SKIP_BTN_NO_QUEUE"),
-                reply_markup=None,
-            )
+            await query.message.delete()
         except Exception:
-            pass
+            try:
+                await query.message.edit_caption(
+                    caption=t(chat_id, "MUSIC_SKIP_BTN_NO_QUEUE"),
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
         await query.answer(t(chat_id, "MUSIC_SKIP_BTN_ALERT"), show_alert=True)
         log_event_sync("music_skipped_stop", {"chat_id": chat_id, "by": query.from_user.id if query.from_user else None})
         return
@@ -1354,14 +1448,16 @@ async def play_radio_station(_, query: CallbackQuery):
                         [InlineKeyboardButton("ℹ️ How to add assistant", callback_data="assistant_invite_help")],
                         [InlineKeyboardButton("❌ Dismiss", callback_data="radio_close")],
                     ])
-                    await query.message.reply_text(
+                    msg = await query.message.reply_text(
                         t(chat_id, "ASSISTANT_INVITE_TEXT"),
                         reply_markup=help_kb,
                     )
+                    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=20))
                     return
             except Exception as e_inv:
                 logging.warning(f"Cannot create invite/join assistant: {e_inv}")
-                await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
+                msg = await query.message.reply_text(t(chat_id, "ASSISTANT_INVITE_FAIL_TEXT"))
+                asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
                 return
         await _safe_call_py_method("play", chat_id, MediaStream(url))
         msg = await query.message.edit_caption(
@@ -1376,19 +1472,23 @@ async def play_radio_station(_, query: CallbackQuery):
     except FloodWait as e:
         await leave_voice_chat(chat_id)
         wait_time = getattr(e, "value", None) or getattr(e, "x", None) or "unknown"
-        await query.message.reply_text(t(chat_id, "RATE_LIMIT", seconds=wait_time))
+        msg = await query.message.reply_text(t(chat_id, "RATE_LIMIT", seconds=wait_time))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
         await query.answer(f"Wait {wait_time}s", show_alert=True)
     except ntgcalls.TelegramServerError:
         await leave_voice_chat(chat_id)
-        await query.message.reply_text(t(chat_id, "VOICECHAT_NOT_READY"))
+        msg = await query.message.reply_text(t(chat_id, "VOICECHAT_NOT_READY"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
         await query.answer("Voice chat not ready!", show_alert=True)
     except RPCError as e:
         await leave_voice_chat(chat_id)
-        await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error=str(e)))
+        msg = await query.message.reply_text(t(chat_id, "RADIO_PLAY_FAILED_ASSIST", error=str(e)))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
     except Exception as e:
         await leave_voice_chat(chat_id)
         logging.error("General radio play error", exc_info=True)
-        await query.message.reply_text(t(chat_id, "RADIO_START_FAIL", error=str(e)))
+        msg = await query.message.reply_text(t(chat_id, "RADIO_START_FAIL", error=str(e)))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
 
 # ---------- START / HELP / LANG ----------
 @bot.on_message(filters.command(["start"]) & filters.private)
@@ -1439,20 +1539,24 @@ async def assistant_invite_help(_, query: CallbackQuery):
     chat_id = query.message.chat.id
     help_text = t(chat_id, "ASSISTANT_INVITE_HELP_TEXT")
     await query.answer()
-    await query.message.reply_text(help_text)
+    msg = await query.message.reply_text(help_text)
+    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=20))
 
 @bot.on_callback_query(filters.regex("^help_info$"))
 async def cb_help_info(_, query: CallbackQuery):
     chat_id = query.message.chat.id
     help_text = t(chat_id, "HELP_TEXT")
     await query.answer()
-    await query.message.reply_text(help_text)
+    msg = await query.message.reply_text(help_text)
+    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=20))
 
 @bot.on_message(filters.group & filters.command(["lang", "setlang"]))
 async def cmd_set_language_group(_, message: Message):
     chat_id = message.chat.id
     if not await dlk_privilege_validator(message):
-        return await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     current = get_chat_lang(chat_id)
     text = (
         t(chat_id, "LANG_MENU_TITLE")
@@ -1461,7 +1565,8 @@ async def cmd_set_language_group(_, message: Message):
         + "\n"
         + t(chat_id, "LANG_CURRENT", lang_name=LANG_NAMES.get(current, current))
     )
-    await message.reply_text(text, reply_markup=lang_keyboard(current))
+    msg = await message.reply_text(text, reply_markup=lang_keyboard(current))
+    asyncio.create_task(delete_message_after(chat_id, msg.id, delay=30))
 
 @bot.on_message(filters.private & filters.command(["lang", "setlang"]))
 async def cmd_set_language_pm(_, message: Message):
@@ -1493,7 +1598,8 @@ async def cb_set_language(_, query: CallbackQuery):
     try:
         await query.message.edit_text(text, reply_markup=lang_keyboard(current))
     except Exception:
-        await query.message.reply_text(text, reply_markup=lang_keyboard(current))
+        msg = await query.message.reply_text(text, reply_markup=lang_keyboard(current))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=30))
     await query.answer()
 
 @bot.on_callback_query(filters.regex("^open_lang_menu$"))
@@ -1511,7 +1617,8 @@ async def cb_open_lang_menu(_, query: CallbackQuery):
     try:
         await query.message.edit_text(text, reply_markup=lang_keyboard(current))
     except Exception:
-        await query.message.reply_text(text, reply_markup=lang_keyboard(current))
+        msg = await query.message.reply_text(text, reply_markup=lang_keyboard(current))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=30))
 
 # ---------- RADIO MENU PAGE / CLOSE ----------
 @bot.on_callback_query(filters.regex(r"^radio_page_(\d+)$"))
@@ -1584,7 +1691,8 @@ if __name__ == "__main__":
     except Exception:
         BOT_USERNAME = None
 
-    log_event_sync("bot_started", {"ts": time.time(), "owner": OWNER_ID})
+    # owner field removed from startup log to avoid relying on OWNER_ID for permissions
+    log_event_sync("bot_started", {"ts": time.time()})
 
     from pyrogram import idle
     try:
