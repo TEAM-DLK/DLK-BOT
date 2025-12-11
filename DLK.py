@@ -1,4 +1,4 @@
-# dlk_radio_bot.py (patched)
+# dlk_radio_bot_lisa_music.py (patched for "LISA MUSIC" with admin-only controls)
 import os
 import re
 import time
@@ -68,11 +68,10 @@ API_ID = int(os.environ.get("API_ID", "") or "")
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 ASSISTANT_SESSION = os.environ.get("ASSISTANT_SESSION", "")
-# OWNER_ID removed from privilege check; still keep env var if you want, but it's not used for permission gating
 OWNER_ID = int(os.getenv("OWNER_ID", "") or 0)
 
 MONGO_URI = os.environ.get("MONGO_URI")
-MONGO_DBNAME = os.environ.get("MONGO_DBNAME", "dlk_radio")
+MONGO_DBNAME = os.environ.get("MONGO_DBNAME", "lisa_music")
 LOG_CHANNEL_ID = os.environ.get("LOG_CHANNEL_ID", "").strip()
 
 YT_DLP_COOKIES = os.environ.get("YT_DLP_COOKIES")
@@ -85,19 +84,18 @@ os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
 DOWNLOADS_DIR = "downloads"
 os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
-# fallback duration for tracks without metadata
 DEFAULT_FALLBACK_DURATION = 240  # 4 minutes
 
 RADIO_STATION = {
     "SirasaFM": "http://live.trusl.com:1170/;",
     "HelaNadaFM": "https://stream-176.zeno.fm/9ndoyrsujwpvv",
     "Radio Plus Hitz": "https://altair.streamerr.co/stream/8054",
-    # ... keep the list as before ...
+    # add more stations as needed...
 }
 
-radio_tasks: Dict[int, asyncio.Task] = {}        # song timer tasks only
+radio_tasks: Dict[int, asyncio.Task] = {}
 radio_paused = set()
-radio_state: Dict[int, Dict[str, Any]] = {}      # current playback state (song or radio)
+radio_state: Dict[int, Dict[str, Any]] = {}
 radio_queue: Dict[int, List[Dict[str, Any]]] = {}
 track_watchers: Dict[int, asyncio.Task] = {}
 bot_start_time = time.time()
@@ -106,7 +104,7 @@ BOT_USERNAME = None
 ASSISTANT_USERNAME = None
 ASSISTANT_ID = None
 
-bot = Client("dlk_radio_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Client("lisa_music_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 assistant = Client("assistant_account", session_string=ASSISTANT_SESSION)
 call_py = PyTgCalls(assistant)
 
@@ -122,7 +120,7 @@ TRANSLATIONS = {
         "QUEUE_EMPTY": "Queue is empty.",
         "QUEUE_HEADER": "Upcoming queue:\n",
         "SKIPPED_NO_QUEUE": "⛔ Skipped. No more tracks in queue.",
-        "BOT_STOPPED": "DLK bot stopped & cleaned up.",
+        "BOT_STOPPED": "LISA MUSIC stopped & cleaned up.",
         "RADIO_ENDED": "✅ Radio ended and assistant left the voice chat.",
         "ADDED_QUEUE": "➕ Added to queue: {title}",
         "ADDED_RADIO_QUEUE": "➕ Added to radio queue: {title}",
@@ -145,7 +143,7 @@ TRANSLATIONS = {
         "RADIO_PAUSE_FAIL": "Failed to pause the stream.",
         "RADIO_RESUMED_BTN": "Resumed.",
         "RADIO_RESUME_FAIL_BTN": "Failed to resume the stream.",
-        "RADIO_STOPPED_BTN": "DLK BOT stopped!",
+        "RADIO_STOPPED_BTN": "LISA MUSIC stopped!",
         "RADIO_STOP_FAIL_BTN": "Failed to stop bot.",
         "ASSISTANT_NOT_IN_GROUP": "Assistant is not in this group. Please add the assistant account and try again.",
         "ASSISTANT_INVITE_TEXT": "Assistant not in group. I've created an invite link — add the assistant account manually and give it permission to speak.",
@@ -164,35 +162,40 @@ TRANSLATIONS = {
         "RADIO_PLAY_FAILED_ASSIST": "Failed to play radio! Assistant error: {error}",
         "RADIO_START_FAIL": "❌ Failed to start radio! Error: {error}",
         "START_TEXT": (
-            "👋 Welcome to DLK BOT!\n\n"
-            "Commands (groups):\n"
-            "- /radio : stations\n"
+            "👋 Welcome to LISA MUSIC!\n\n"
+            "Commands (groups - admins only):\n"
+            "- /radio : open stations menu\n"
             "- /play <query|URL> or reply to an audio/voice file and use /play : play music\n"
             "- /pause /resume /stop /skip : playback controls (admins)\n\n"
             "Use /lang to change the language."
         ),
-        "HOME_TEXT": "👋 DLK BOT Home\n\nUse the buttons to navigate: Menu shows radio stations. Help explains commands.",
+        "HOME_TEXT": "👋 LISA MUSIC Home\n\nUse the buttons to navigate: Menu shows radio stations. Help explains commands.",
         "HELP_TEXT": (
-            "DLK BOT help:\n"
-            "- Use /play to play YouTube links or search terms.\n"
-            "- Reply to an audio/file and use /play to play local audio.\n"
-            "- Use /radio to open the radio stations menu.\n"
-            "- Use /rpush to add a station or url to the queue.\n"
+            "LISA MUSIC help (admins only for control):\n"
+            "- Use /play to play YouTube links or search terms (admins only).\n"
+            "- Reply to an audio/file and use /play to play local audio (admins only).\n"
+            "- Use /radio to open the radio stations menu (admins only).\n"
+            "- Use /rpush to add a station or url to the queue (admins only).\n"
             "- Use /rskip to skip to next queued station, /rend to end radio, /rresume to resume (admins only).\n"
             "- Admins can use pause/resume/skip/stop via the inline buttons.\n"
-            "- /lang to change bot language in this chat.\n"
+            "- /queue to view queued items (everyone can view).\n"
+            "- /lang to change bot language in this chat (admins only).\n"
         ),
         "LANG_MENU_TITLE": "🌐 Chat language settings",
         "CHOOSE_LANG": "🌐 Choose the language for this chat:",
         "LANG_CURRENT": "Current language: {lang_name}",
         "LANG_CHANGED": "✅ Language changed to {lang_name}.",
         "UNKNOWN_LANG": "Unknown language.",
+        "ONLY_ADMINS_RADIO_BUTTON": "Only admins can use the player buttons.",
+        "ONLY_ADMINS_RADIO_END": "Only admins can end the radio.",
+        "ONLY_ADMINS_RADIO_SKIP": "Only admins can skip radio.",
+        "ONLY_ADMINS_RADIO_RESUME": "Only admins can resume radio.",
     },
     "si": {
-        # Sinhala translations kept like original (trimmed here for brevity)
+        # minimal Sinhala support kept; expand as needed
         "ONLY_ADMINS": "මෙම විධානය භාවිතා කරන්න පුළුවන් ඇඩ්මින්ලට විතරයි.",
-        "PLAY_USAGE": "භාවිතා කරන්නේ මෙහෙමයි: /play <YouTube url / search term> හෝ audio/voice එකකට reply කරලා /play දාන්න.",
-        # ... (other keys copied as needed) ...
+        "PLAY_USAGE": "භාවිතා: /play <YouTube url / search term> හෝ audio/voice එකකට reply කරලා /play දාන්න.",
+        "START_TEXT": "👋 LISA MUSIC එකට සාදරයෙන් පිළිගනිමු!\n\nAdmins පමණක් playback commands භාවිතා කරනු ඇත.",
     },
 }
 
@@ -271,10 +274,6 @@ def get_youtube_id(url: str) -> Optional[str]:
     return None
 
 def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
-    """
-    Use yt-dlp to extract an audio-only stream URL.
-    If yt-dlp not installed or extraction fails, return None.
-    """
     if youtube_dl is None:
         logging.warning("yt_dlp not installed.")
         return None
@@ -296,14 +295,12 @@ def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
                 return None
             if "entries" in info and isinstance(info["entries"], list) and info["entries"]:
                 info = info["entries"][0]
-            # prefer direct audio url
             stream_url = info.get("url")
             if not stream_url and "formats" in info:
                 formats = [f for f in info.get("formats", []) if f.get("acodec") and f.get("url")]
                 if formats:
                     best = sorted(formats, key=lambda x: (x.get("abr") or 0), reverse=True)[0]
                     stream_url = best.get("url")
-            # If still no audio URL, fail
             if not stream_url:
                 logging.warning("yt_dlp: no stream_url / no audio format found")
                 return None
@@ -409,7 +406,7 @@ async def _process_image_and_overlay(src_path: str, out_key: str, title: str) ->
         except Exception:
             title_font = ImageFont.load_default()
             small_font = ImageFont.load_default()
-        draw.text((20, 20), "DLK DEVELOPER", fill="white", font=small_font)
+        draw.text((20, 20), "LISA MUSIC", fill="white", font=small_font)
         title_x = art_x + art.size[0] + 30
         title_y = art_y + 30
         shadow_color = (0, 0, 0, 200)
@@ -475,7 +472,6 @@ def init_db_sync():
         return
     db_client = MongoClient(MONGO_URI)
     db = db_client[MONGO_DBNAME]
-    # keep langs and logs collections only
     try:
         db.logs.create_index("ts")
         db.langs.create_index("chat_id", unique=True)
@@ -530,7 +526,6 @@ async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> boo
       - Chat administrators (administrator or creator)
       - Anonymous admin (sender_chat is admin)
     For private chats returns False (admins only apply to groups).
-    NOTE: OWNER_ID based bypass removed to ensure commands rely on group admin status.
     """
     try:
         if isinstance(subject, CallbackQuery):
@@ -613,7 +608,6 @@ async def delete_message_after(chat_id: int, message_id: int, delay: int = 5):
         try:
             await bot.delete_messages(chat_id, message_id)
         except Exception:
-            # fallback to single delete
             try:
                 await bot.delete_messages(chat_id, message_id)
             except Exception:
@@ -686,11 +680,7 @@ async def _force_leave_call(chat_id: int):
             logging.debug(f"_force_leave_call leave_call fallback failed {chat_id}: {e2}")
 
 async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True, delete_messages: bool = True):
-    """
-    Stops playback, cancels timers/watchers, and optionally deletes the 'Now Playing' message.
-    """
     try:
-        # capture state before we pop it
         state = radio_state.get(chat_id)
         if chat_id in radio_tasks:
             try:
@@ -706,13 +696,11 @@ async def leave_voice_chat(chat_id: int, cancel_watchers: bool = True, delete_me
             track_watchers.pop(chat_id, None)
         if chat_id in radio_paused:
             radio_paused.discard(chat_id)
-        # remove in-memory state before attempting leave (avoid races)
         radio_state.pop(chat_id, None)
         try:
             await _force_leave_call(chat_id)
         except Exception as e:
             logging.debug(f"force leave vc failed {chat_id}: {e}")
-        # attempt to delete playing message if requested
         if delete_messages and state:
             try:
                 msg_id = state.get("msg_id")
@@ -832,7 +820,6 @@ async def track_watcher(chat_id: int, duration: int, msg_id: int):
             log_event_sync("music_auto_skipped", {"chat_id": chat_id, "title": next_entry.get("title")})
         else:
             try:
-                # delete the now playing message if exists
                 try:
                     await bot.delete_messages(chat_id, msg_id)
                 except Exception:
@@ -929,10 +916,15 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
             pass
         return False
 
-# ---------- /play ----------
+# ---------- /play (ADMIN ONLY) ----------
 @bot.on_message(filters.group & filters.command(["play", "p"]))
 async def cmd_play(_, message: Message):
     chat_id = message.chat.id
+    if not await dlk_privilege_validator(message):
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
+
     user = message.from_user
     try:
         assistant_user = await assistant.get_me()
@@ -948,7 +940,7 @@ async def cmd_play(_, message: Message):
             assistant_present = False
     if not assistant_present:
         try:
-            invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+            invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="LISA MUSIC assistant")
             invite_link = invite.invite_link
             try:
                 await assistant.join_chat(invite_link)
@@ -960,7 +952,6 @@ async def cmd_play(_, message: Message):
             except Exception:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("📋 Invite Link", url=invite_link)]])
                 msg = await message.reply_text(t(chat_id, "ASSISTANT_INVITE_TEXT"), reply_markup=kb)
-                # auto-delete the invite message after short delay
                 asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
                 return
         except Exception:
@@ -1029,7 +1020,7 @@ async def cmd_play(_, message: Message):
         except Exception:
             pass
 
-# ---------- /skip /queue /stop ----------
+# ---------- /skip (ADMIN ONLY) ----------
 @bot.on_message(filters.group & filters.command(["skip", "s"]))
 async def cmd_skip(_, message: Message):
     chat_id = message.chat.id
@@ -1061,6 +1052,7 @@ async def cmd_skip(_, message: Message):
         msg = await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
         asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
 
+# ---------- /queue (anyone can view) ----------
 @bot.on_message(filters.group & filters.command(["queue", "q"]))
 async def cmd_queue(_, message: Message):
     chat_id = message.chat.id
@@ -1075,6 +1067,7 @@ async def cmd_queue(_, message: Message):
     msg = await message.reply_text(text)
     asyncio.create_task(delete_message_after(chat_id, msg.id, delay=12))
 
+# ---------- /stop (ADMIN ONLY) ----------
 @bot.on_message(filters.group & filters.command(["stop", "end"]))
 async def general_stop_handler(_, message: Message):
     chat_id = message.chat.id
@@ -1083,22 +1076,20 @@ async def general_stop_handler(_, message: Message):
         asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         return
 
-    state = radio_state.get(chat_id)
-    msg_id = state.get("msg_id") if state else None
-
-    # leave and delete the playback message
     await leave_voice_chat(chat_id)
-
-    # send a short confirmation and auto-delete it
     confirm = await message.reply_text(t(chat_id, "BOT_STOPPED"))
     asyncio.create_task(delete_message_after(chat_id, confirm.id, delay=6))
-
     log_event_sync("radio_stopped_text", {"chat_id": chat_id, "by": message.from_user.id if message.from_user else None})
 
-# ---------- RADIO COMMANDS ----------
+# ---------- RADIO COMMANDS (ADMIN ONLY where applicable) ----------
 @bot.on_message(filters.group & filters.command(["radio"]))
 async def cmd_radio_menu(_, message: Message):
     chat_id = message.chat.id
+    # radio menu restricted to admins to control
+    if not await dlk_privilege_validator(message):
+        msg = await message.reply_text(t(chat_id, "ONLY_ADMINS"))
+        asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
+        return
     kb = radio_buttons(0)
     msg = await message.reply_text("📻 Radio Stations - choose one:", reply_markup=kb)
     asyncio.create_task(delete_message_after(chat_id, msg.id, delay=20))
@@ -1148,7 +1139,7 @@ async def cmd_rskip(_, message: Message):
         asyncio.create_task(delete_message_after(chat_id, msg.id, delay=6))
         log_event_sync("radio_rskip", {"chat_id": chat_id, "title": next_entry["title"], "by": message.from_user.id if message.from_user else None})
     else:
-        msg = await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT_RADIO", title=next_entry.get("title")))
+        msg = await message.reply_text(t(chat_id, "FAILED_PLAY_NEXT", title=next_entry.get("title")))
         asyncio.create_task(delete_message_after(chat_id, msg.id, delay=8))
 
 @bot.on_message(filters.group & filters.command(["rpush"]))
@@ -1353,7 +1344,7 @@ async def radio_resume_cb(_, query: CallbackQuery):
         state["elapsed"] = 0.0
         state["start_time"] = start_time
         radio_paused.discard(chat_id)
-        duration = state.get("duration")  # None => radio (no timer)
+        duration = state.get("duration")
         store_play_state(
             chat_id,
             state.get("station"),
@@ -1407,10 +1398,14 @@ async def cb_radio_stop(_, query: CallbackQuery):
         logging.error(f"Stop failed via callback: {e}", exc_info=True)
         await query.answer(t(chat_id, "RADIO_STOP_FAIL_BTN"), show_alert=True)
 
-# ---------- RADIO BUTTON PLAY ----------
+# ---------- RADIO BUTTON PLAY (ADMIN ONLY) ----------
 @bot.on_callback_query(filters.regex("^radio_play_"))
 async def play_radio_station(_, query: CallbackQuery):
     chat_id = query.message.chat.id
+    # only admins may start radio via button
+    if not await dlk_privilege_validator(query):
+        return await query.answer(t(chat_id, "ONLY_ADMINS"), show_alert=True)
+
     station = query.data.replace("radio_play_", "")
     url = RADIO_STATION.get(station)
     user = query.from_user
@@ -1431,7 +1426,7 @@ async def play_radio_station(_, query: CallbackQuery):
                 assistant_present = False
         if not assistant_present:
             try:
-                invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="DLK BOT assistant")
+                invite = await bot.create_chat_invite_link(chat_id, member_limit=1, name="LISA MUSIC assistant")
                 invite_link = invite.invite_link
                 try:
                     await assistant.join_chat(invite_link)
@@ -1588,6 +1583,10 @@ async def cb_set_language(_, query: CallbackQuery):
     if lang_code not in LANG_NAMES:
         await query.answer(t(chat_id, "UNKNOWN_LANG"), show_alert=True)
         return
+    # only admins can change chat language
+    if not await dlk_privilege_validator(query):
+        await query.answer(t(chat_id, "ONLY_ADMINS"), show_alert=True)
+        return
     set_chat_lang(chat_id, lang_code)
     current = lang_code
     text = (
@@ -1605,6 +1604,9 @@ async def cb_set_language(_, query: CallbackQuery):
 @bot.on_callback_query(filters.regex("^open_lang_menu$"))
 async def cb_open_lang_menu(_, query: CallbackQuery):
     chat_id = query.message.chat.id
+    # admin-only open lang menu in groups
+    if query.message.chat.type != "private" and not await dlk_privilege_validator(query):
+        return await query.answer(t(chat_id, "ONLY_ADMINS"), show_alert=True)
     current = get_chat_lang(chat_id)
     text = (
         t(chat_id, "LANG_MENU_TITLE")
@@ -1666,7 +1668,7 @@ async def cb_radio_close(_, query: CallbackQuery):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     logger = logging.getLogger(__name__)
-    logger.info("Starting DLK Bot...")
+    logger.info("Starting LISA MUSIC Bot...")
 
     try:
         init_db_sync()
@@ -1691,8 +1693,7 @@ if __name__ == "__main__":
     except Exception:
         BOT_USERNAME = None
 
-    # owner field removed from startup log to avoid relying on OWNER_ID for permissions
-    log_event_sync("bot_started", {"ts": time.time()})
+    log_event_sync("bot_started", {"ts": time.time(), "name": "LISA MUSIC"})
 
     from pyrogram import idle
     try:
