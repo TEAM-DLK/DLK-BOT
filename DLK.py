@@ -639,7 +639,16 @@ def unblock_group_sync(chat_id: int):
     db.blocked.delete_one({"chat_id": chat_id})
 
 async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> bool:
+    """
+    Return True if the subject (Message or CallbackQuery) was performed by:
+      - the configured OWNER_ID (bot owner),
+      - a chat administrator (creator/administrator),
+      - or an anonymous admin (sender_chat present and has admin status).
+
+    Works for both Message and CallbackQuery objects.
+    """
     try:
+        # Normalize objects
         if isinstance(subject, CallbackQuery):
             user = subject.from_user
             chat = subject.message.chat
@@ -648,26 +657,42 @@ async def dlk_privilege_validator(subject: Union[Message, CallbackQuery]) -> boo
             user = subject.from_user
             chat = subject.chat
             sender_chat = getattr(subject, "sender_chat", None)
-        if user and user.id == OWNER_ID:
-            return True
+
+        # Quick owner check (works when from_user is present)
+        try:
+            if user and OWNER_ID and getattr(user, "id", None) == int(OWNER_ID):
+                return True
+        except Exception:
+            # in case OWNER_ID is not int-parsable for some reason
+            pass
+
+        # Do not allow in private chats (unless you want different behaviour)
         if chat.type == "private":
             return False
-        if user:
-            try:
-                member = await bot.get_chat_member(chat.id, user.id)
-                status = getattr(member, "status", "").lower()
-                if status in ("administrator", "creator"):
-                    return True
-            except Exception:
-                pass
+
+        # If sender_chat exists (anonymous admin posting as channel), check its membership/status
         if sender_chat:
             try:
                 member = await bot.get_chat_member(chat.id, sender_chat.id)
-                status = getattr(member, "status", "").lower()
+                status = (getattr(member, "status", "") or "").lower()
                 if status in ("administrator", "creator"):
                     return True
             except Exception:
+                # Some Telegram setups may disallow get_chat_member for sender_chat; ignore and continue.
                 pass
+
+        # If a user object exists, check the user's role in the chat
+        if user:
+            try:
+                member = await bot.get_chat_member(chat.id, user.id)
+                status = (getattr(member, "status", "") or "").lower()
+                if status in ("administrator", "creator"):
+                    return True
+            except Exception:
+                # Could fail for many reasons (bot kicked, network); fall through to False.
+                pass
+
+        # Fallback: not an admin / not owner
         return False
     except Exception as e:
         logging.warning(f"Privilege check failed: {e}")
