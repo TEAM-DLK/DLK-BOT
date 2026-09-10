@@ -25,4 +25,4 @@ RUN mkdir -p /app/downloads /app/cache
 ENV PYTHONUNBUFFERED=1
 
 # Default command (heroku uses Procfile; Docker will use this if run directly)
-CMD ["python", "DLK.py"]
+CMD ["python", "main.py"]
