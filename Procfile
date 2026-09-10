@@ -1,1 +1,1 @@
-worker: python DLK.py
+worker: python main.py
