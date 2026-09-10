@@ -23,6 +23,10 @@ except ImportError:
 from pytgcalls import PyTgCalls
 from pytgcalls.types import MediaStream, AudioQuality
 from dotenv import load_dotenv
+from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi.responses import JSONResponse, FileResponse
+import uvicorn
+import threading
 
 # yt-dlp for extracting audio streams
 try:
@@ -68,6 +72,20 @@ YT_DLP_COOKIES = os.environ.get("YT_DLP_COOKIES")  # optional cookies.txt path
 
 DEV_LINK = "https://t.me/DLKDEVELOPERS"
 SUPPORT_LINK = "https://t.me/DevDLK"
+
+# REST API configuration
+STREAM_API_KEY = os.environ.get("STREAM_API_KEY", "").strip()
+STREAM_API_HOST = os.environ.get("STREAM_API_HOST", "0.0.0.0").strip()
+STREAM_API_PORT = int(os.environ.get("STREAM_API_PORT", "8080"))
+STREAM_API_RATE_LIMIT = int(os.environ.get("STREAM_API_RATE_LIMIT", "30"))
+STREAM_API_RATE_WINDOW = int(os.environ.get("STREAM_API_RATE_WINDOW", "60"))
+
+# Optional external YouTube download API (same architecture as the supplied sample).
+# If configured, the bot downloads MP3 files from this API instead of playing
+# short-lived YouTube media URLs. If unavailable, local yt-dlp is used as fallback.
+YOUTUBE_API_URL = os.environ.get("SHRUTI_API_URL", "").strip().rstrip("/")
+YOUTUBE_API_KEY = os.environ.get("SHRUTI_API_KEY", "").strip()
+YOUTUBE_API_TIMEOUT = int(os.environ.get("SHRUTI_API_TIMEOUT", "300"))
 
 THUMB_CACHE_DIR = "cache"
 os.makedirs(THUMB_CACHE_DIR, exist_ok=True)
@@ -155,101 +173,362 @@ def get_youtube_id(url: str) -> Optional[str]:
         pass
     return None
 
-def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
-    """
-    Resolve a YouTube/search query to an AUDIO-ONLY remote stream.
+def _safe_video_id(value: str) -> Optional[str]:
+    value = (value or "").strip()
+    vid = get_youtube_id(value)
+    if vid:
+        return vid
+    if re.fullmatch(r"[A-Za-z0-9_-]{6,20}", value):
+        return value
+    return None
 
-    The returned stream URL is intentionally treated as short-lived.
-    play_entry() re-resolves the YouTube page when necessary so queued
-    items do not keep using an expired yt-dlp URL.
-    """
+
+def _youtube_info_local(query: str) -> Optional[Dict[str, Any]]:
+    """Resolve metadata with yt-dlp without downloading media."""
     if youtube_dl is None:
-        logging.error("yt-dlp is not installed.")
         return None
-
     query = (query or "").strip()
     if not query:
         return None
-
     target = query if looks_like_url(query) else f"ytsearch1:{query}"
-
-    ydl_opts = {
-        # AUDIO ONLY: never request video formats.
-        "format": "bestaudio[acodec!=none]/bestaudio",
+    opts = {
         "quiet": True,
         "no_warnings": True,
         "noplaylist": True,
         "skip_download": True,
         "cachedir": False,
         "socket_timeout": 20,
-        "retries": 3,
-        "fragment_retries": 3,
-        "extractor_args": {
-            "youtube": {
-                # Current yt-dlp defaults are android/web; keep this explicit
-                # so the bot does not accidentally request video-only formats.
-                "player_client": ["android", "web"],
-            }
-        },
+        "retries": 2,
+        "extractor_args": {"youtube": {"player_client": ["android", "web_safari"]}},
     }
-
     if YT_DLP_COOKIES and os.path.isfile(YT_DLP_COOKIES):
-        ydl_opts["cookiefile"] = YT_DLP_COOKIES
-
+        opts["cookiefile"] = YT_DLP_COOKIES
     try:
-        with youtube_dl.YoutubeDL(ydl_opts) as ydl:
+        with youtube_dl.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(target, download=False)
-
+        if info and info.get("entries"):
+            info = next((x for x in info["entries"] if x), None)
         if not info:
             return None
-
-        if "entries" in info:
-            entries = [e for e in (info.get("entries") or []) if e]
-            if not entries:
-                return None
-            info = entries[0]
-
-        # Prefer an actual audio format. yt-dlp normally returns info["url"]
-        # for the selected bestaudio format.
-        stream_url = info.get("url")
-        if not stream_url:
-            formats = info.get("formats") or []
-            audio_formats = [
-                f for f in formats
-                if f.get("url") and f.get("acodec") not in (None, "none")
-            ]
-            audio_formats.sort(
-                key=lambda f: (
-                    f.get("abr") or 0,
-                    f.get("asr") or 0,
-                    f.get("filesize") or 0,
-                ),
-                reverse=True,
-            )
-            if audio_formats:
-                stream_url = audio_formats[0]["url"]
-
-        if not stream_url:
-            logging.warning("yt-dlp returned no playable audio stream for %s", query)
-            return None
-
         return {
+            "id": info.get("id"),
             "title": info.get("title") or "Unknown",
-            "webpage_url": info.get("webpage_url") or (
-                f"https://www.youtube.com/watch?v={info.get('id')}"
-                if info.get("id") else target
-            ),
-            "stream_url": stream_url,
+            "webpage_url": info.get("webpage_url") or (f"https://www.youtube.com/watch?v={info.get('id')}" if info.get("id") else query),
             "thumbnail": info.get("thumbnail"),
             "duration": int(info.get("duration")) if info.get("duration") else None,
-            # yt-dlp supplies headers that can be required when the direct
-            # media URL is consumed by another HTTP client.
-            "http_headers": info.get("http_headers") or {},
         }
-
     except Exception as e:
-        logging.warning("yt-dlp audio extraction failed for %r: %s", query, e)
+        logging.warning("yt-dlp metadata lookup failed for %r: %s", query, e)
         return None
+
+
+async def _youtube_search_info(query: str) -> Optional[Dict[str, Any]]:
+    """Resolve search text to a YouTube video ID.
+
+    First use youtube-search-python for normal searches. If that service is
+    blocked/broken, fall back to yt-dlp's *flat* search. Flat search is
+    important here because it can discover the video ID without requesting
+    YouTube's playable media formats.
+    """
+    query = (query or "").strip()
+    if not query:
+        return None
+
+    # 1) Normal youtube-search-python path.
+    if VIDEOS_SEARCH_AVAILABLE and VideosSearch is not None:
+        try:
+            results = VideosSearch(query, limit=1)
+            data = await results.next()
+            items = (data or {}).get("result") or []
+            if items:
+                item = items[0]
+                duration = item.get("duration")
+                duration_sec = None
+                if duration:
+                    try:
+                        duration_sec = sum(
+                            int(x) * 60 ** i
+                            for i, x in enumerate(reversed(str(duration).split(":")))
+                        )
+                    except Exception:
+                        pass
+                if item.get("id"):
+                    return {
+                        "id": item.get("id"),
+                        "title": item.get("title") or "Unknown",
+                        "webpage_url": item.get("link") or (
+                            f"https://www.youtube.com/watch?v={item.get('id')}"
+                        ),
+                        "thumbnail": (
+                            (item.get("thumbnails") or [{}])[0]
+                            .get("url", "")
+                            .split("?")[0]
+                        ),
+                        "duration": duration_sec,
+                    }
+        except Exception as e:
+            logging.warning("youtube-search-python failed for %r: %s", query, e)
+
+    # 2) yt-dlp flat-search fallback. This does NOT request audio formats.
+    if youtube_dl is not None:
+        try:
+            opts = {
+                "quiet": True,
+                "no_warnings": True,
+                "skip_download": True,
+                "extract_flat": True,
+                "noplaylist": True,
+                "socket_timeout": 20,
+                "retries": 2,
+            }
+            with youtube_dl.YoutubeDL(opts) as ydl:
+                data = ydl.extract_info(f"ytsearch1:{query}", download=False)
+
+            entries = [x for x in (data.get("entries") or []) if x]
+            if entries:
+                item = entries[0]
+                vid = item.get("id")
+                if vid:
+                    return {
+                        "id": vid,
+                        "title": item.get("title") or "YouTube Audio",
+                        "webpage_url": item.get("webpage_url") or (
+                            f"https://www.youtube.com/watch?v={vid}"
+                        ),
+                        "thumbnail": item.get("thumbnail"),
+                        "duration": int(item.get("duration")) if item.get("duration") else None,
+                    }
+        except Exception as e:
+            logging.warning("yt-dlp flat YouTube search failed for %r: %s", query, e)
+
+    return None
+
+
+async def resolve_track(query: str) -> Optional[Dict[str, Any]]:
+    """Resolve a song query to stable metadata (video id + title)."""
+    query = (query or "").strip()
+    if not query:
+        return None
+    if _safe_video_id(query):
+        vid = _safe_video_id(query)
+        info = await asyncio.to_thread(_youtube_info_local, query)
+        if info:
+            return info
+        return {"id": vid, "title": "YouTube Audio", "webpage_url": f"https://www.youtube.com/watch?v={vid}", "thumbnail": None, "duration": None}
+    if looks_like_url(query):
+        info = await asyncio.to_thread(_youtube_info_local, query)
+        return info
+    info = await _youtube_search_info(query)
+    if info and info.get("id"):
+        return info
+
+    # Last resort: normal yt-dlp metadata lookup.
+    return await asyncio.to_thread(_youtube_info_local, query)
+
+
+async def download_song(link: str) -> Optional[str]:
+    """Download a YouTube audio track to a local MP3 cache.
+
+    This follows the supplied sample's API-download architecture: the bot
+    requests an MP3 from an external download API when configured, stores it
+    under downloads/<video_id>.mp3, and then plays the local file.
+    """
+    video_id = _safe_video_id(link)
+    if not video_id:
+        info = await resolve_track(link)
+        video_id = info.get("id") if info else None
+    if not video_id:
+        return None
+
+    os.makedirs(DOWNLOADS_DIR, exist_ok=True)
+    file_path = os.path.join(DOWNLOADS_DIR, f"{video_id}.mp3")
+    if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+        return file_path
+
+    # Preferred path: external API, matching the supplied sample.
+    if YOUTUBE_API_URL and YOUTUBE_API_KEY:
+        try:
+            timeout = aiohttp.ClientTimeout(total=YOUTUBE_API_TIMEOUT)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(
+                    f"{YOUTUBE_API_URL}/download",
+                    params={"url": video_id, "type": "audio", "api_key": YOUTUBE_API_KEY},
+                ) as resp:
+                    if resp.status == 200:
+                        tmp_path = file_path + ".part"
+                        with open(tmp_path, "wb") as f:
+                            async for chunk in resp.content.iter_chunked(131072):
+                                if chunk:
+                                    f.write(chunk)
+                        if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                            os.replace(tmp_path, file_path)
+                            logging.info("Audio downloaded through external API: %s", video_id)
+                            return file_path
+                    else:
+                        body = await resp.text()
+                        logging.warning("External YouTube API returned %s: %s", resp.status, body[:300])
+        except Exception as e:
+            logging.warning("External YouTube API download failed: %s", e)
+            try:
+                if os.path.exists(file_path + ".part"):
+                    os.remove(file_path + ".part")
+            except Exception:
+                pass
+
+    # Fallback: local yt-dlp download. This is also file-based, not a direct stream URL.
+    if youtube_dl is None:
+        return None
+    opts = {
+        "format": "bestaudio[acodec!=none]/bestaudio",
+        "outtmpl": os.path.join(DOWNLOADS_DIR, f"{video_id}.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "cachedir": False,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
+        "extractor_args": {"youtube": {"player_client": ["android", "web_safari"]}},
+    }
+    if YT_DLP_COOKIES and os.path.isfile(YT_DLP_COOKIES):
+        opts["cookiefile"] = YT_DLP_COOKIES
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    try:
+        await asyncio.to_thread(_yt_download_sync, url, opts)
+        if os.path.isfile(file_path) and os.path.getsize(file_path) > 0:
+            return file_path
+        # Some ffmpeg/postprocessor combinations may produce a different extension.
+        for name in os.listdir(DOWNLOADS_DIR):
+            if name.startswith(video_id + ".") and name.endswith((".mp3", ".m4a", ".webm", ".opus")):
+                candidate = os.path.join(DOWNLOADS_DIR, name)
+                if os.path.getsize(candidate) > 0:
+                    return candidate
+    except Exception as e:
+        logging.warning("Local yt-dlp audio download failed for %s: %s", video_id, e)
+    return None
+
+
+def _yt_download_sync(url: str, opts: dict):
+    with youtube_dl.YoutubeDL(opts) as ydl:
+        ydl.download([url])
+
+
+async def get_downloaded_track(query: str) -> Optional[Dict[str, Any]]:
+    info = await resolve_track(query)
+    if not info or not info.get("id"):
+        return None
+    path = await download_song(info["id"])
+    if not path:
+        return None
+    info["file_path"] = path
+    info["is_local"] = True
+    return info
+
+
+def extract_audio_url(query: str) -> Optional[Dict[str, Any]]:
+    """Compatibility resolver for the old /api/stream endpoint.
+
+    New playback uses local downloaded files via get_downloaded_track().
+    """
+    info = _youtube_info_local(query)
+    if not info or not info.get("id"):
+        return None
+    return info
+
+
+# ====================== AUDIO STREAM REST API ======================
+_api_app = FastAPI(title="DLK Audio Stream API", version="1.0.0")
+_api_rate = {}
+_api_rate_lock = asyncio.Lock()
+
+async def _api_check_rate(client_id: str):
+    now = time.monotonic()
+    async with _api_rate_lock:
+        values = _api_rate.setdefault(client_id, [])
+        cutoff = now - STREAM_API_RATE_WINDOW
+        values[:] = [t for t in values if t > cutoff]
+        if len(values) >= STREAM_API_RATE_LIMIT:
+            raise HTTPException(status_code=429, detail="Rate limit exceeded. Try again later.")
+        values.append(now)
+
+def _api_auth(x_api_key: Optional[str]):
+    if not STREAM_API_KEY:
+        raise HTTPException(status_code=503, detail="STREAM_API_KEY is not configured.")
+    if x_api_key != STREAM_API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key.")
+
+@_api_app.get("/")
+async def _api_root():
+    return {
+        "success": True,
+        "service": "DLK Audio Download API",
+        "version": "2.0.0",
+        "endpoints": ["/health", "/api/download?q=<song-or-youtube-url>", "/api/stream?q=<song-or-youtube-url>"],
+    }
+
+
+@_api_app.get("/health")
+async def _api_health():
+    return {"success": True, "status": "online"}
+
+
+@_api_app.get("/api/download")
+async def _api_download(
+    q: str = Query(..., min_length=1, max_length=200),
+    x_api_key: Optional[str] = Header(default=None),
+    key: Optional[str] = Query(default=None),
+):
+    # Header is preferred; query key is kept for easy browser testing.
+    _api_auth(x_api_key or key)
+    await _api_check_rate(x_api_key or key or "unknown")
+    result = await get_downloaded_track(q)
+    if not result or not result.get("file_path"):
+        raise HTTPException(status_code=404, detail="Could not download audio.")
+    return FileResponse(
+        result["file_path"],
+        media_type="audio/mpeg",
+        filename=os.path.basename(result["file_path"]),
+        headers={"X-Track-Title": result.get("title", "Unknown")},
+    )
+
+
+@_api_app.get("/api/stream")
+async def _api_stream(
+    q: str = Query(..., min_length=1, max_length=200),
+    x_api_key: Optional[str] = Header(default=None),
+    key: Optional[str] = Query(default=None),
+):
+    # Backwards-compatible endpoint. It now returns a stable local API URL
+    # instead of an expiring YouTube media URL.
+    _api_auth(x_api_key or key)
+    await _api_check_rate(x_api_key or key or "unknown")
+    result = await resolve_track(q)
+    if not result or not result.get("id"):
+        raise HTTPException(status_code=404, detail="Could not resolve the requested audio.")
+    return JSONResponse({
+        "success": True,
+        "title": result.get("title") or "Unknown",
+        "video_id": result.get("id"),
+        "duration": result.get("duration"),
+        "thumbnail": result.get("thumbnail"),
+        "webpage_url": result.get("webpage_url"),
+        "download_url": f"/api/download?q={result.get('id')}",
+    })
+
+def _run_audio_api():
+    config = uvicorn.Config(_api_app, host=STREAM_API_HOST, port=STREAM_API_PORT,
+                            log_level="info", access_log=False)
+    uvicorn.Server(config).run()
+
+def start_audio_api():
+    if not STREAM_API_KEY:
+        logging.warning("Audio API disabled: STREAM_API_KEY is not configured.")
+        return None
+    thread = threading.Thread(target=_run_audio_api, name="dlk-audio-api", daemon=True)
+    thread.start()
+    logging.info("Audio Stream API started on %s:%s", STREAM_API_HOST, STREAM_API_PORT)
+    return thread
 
 # ====================== THUMBNAIL PROCESSING ======================
 def changeImageSize(maxWidth, maxHeight, image):
@@ -895,6 +1174,35 @@ async def prepare_entry_from_reply(reply_msg: Message) -> Optional[Dict[str, Any
         return None
 
 # ====================== CORE play_entry (thumbnail fix & robust calls) ======================
+def _player_caption(title: str, entry: dict, user=None) -> str:
+    """Compact single-message player caption with title + requester mention."""
+    title = (title or "Unknown").strip()
+    if len(title) > 90:
+        title = title[:87] + "..."
+    mention = ""
+    if user:
+        try:
+            if getattr(user, "username", None):
+                mention = f"@{user.username}"
+            else:
+                name = (getattr(user, "first_name", None) or "User").strip()
+                if getattr(user, "last_name", None):
+                    name += f" {user.last_name}"
+                mention = f'<a href="tg://user?id={user.id}">{name}</a>'
+        except Exception:
+            mention = ""
+    requester = f"\n👤 Requested by: {mention}" if mention else ""
+    return f"🎵 <b>{title}</b>{requester}"
+
+async def _delete_old_player_message(chat_id: int):
+    old = radio_state.get(chat_id) or {}
+    old_id = old.get("msg_id")
+    if old_id:
+        try:
+            await bot.delete_messages(chat_id, old_id)
+        except Exception:
+            pass
+
 async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message] = None):
     """
     Play one AUDIO-ONLY entry in the Telegram voice chat.
@@ -908,25 +1216,25 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
             radio_tasks.pop(chat_id, None)
 
         title = entry.get("title") or "Unknown"
+        user = entry.get("requester")
         is_local = bool(entry.get("is_local"))
-        stream_source = entry.get("stream_url")
+        stream_source = entry.get("file_path") or entry.get("stream_url")
         headers = entry.get("http_headers") or {}
 
-        # Re-resolve YouTube immediately before playback. This prevents
-        # queued tracks from using an expired direct media URL.
-        if not is_local and entry.get("webpage"):
-            refreshed = await asyncio.to_thread(
-                extract_audio_url,
-                entry["webpage"],
-            )
-            if refreshed and refreshed.get("stream_url"):
-                entry.update(refreshed)
-                title = entry.get("title") or title
-                stream_source = entry["stream_url"]
-                headers = entry.get("http_headers") or {}
+        # YouTube tracks are downloaded to a local MP3 before playback.
+        # This avoids expired direct YouTube media URLs.
+        if not is_local:
+            query = entry.get("video_id") or entry.get("webpage") or entry.get("title")
+            refreshed = await get_downloaded_track(query)
+            if not refreshed or not refreshed.get("file_path"):
+                raise RuntimeError("Audio download failed. Configure SHRUTI_API_URL/SHRUTI_API_KEY or valid yt-dlp cookies.")
+            entry.update(refreshed)
+            title = entry.get("title") or title
+            stream_source = entry.get("file_path")
+            is_local = True
 
-        if not stream_source:
-            raise RuntimeError("No audio stream URL/path was available.")
+        if not stream_source or not os.path.isfile(stream_source):
+            raise RuntimeError("No downloaded audio file was available.")
 
         async def start_audio(source: str, source_headers: dict):
             # IMPORTANT: explicitly IGNORE the video track. PyTgCalls'
@@ -948,21 +1256,24 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
         try:
             await start_audio(stream_source, headers)
         except Exception:
-            # A direct YouTube media URL may have expired. Re-extract once.
-            if not is_local and entry.get("webpage"):
-                refreshed = await asyncio.to_thread(
-                    extract_audio_url,
-                    entry["webpage"],
-                )
-                if not refreshed or not refreshed.get("stream_url"):
+            # If a cached file is broken, remove it and download once again.
+            if is_local and entry.get("video_id"):
+                try:
+                    if os.path.isfile(stream_source):
+                        os.remove(stream_source)
+                except Exception:
+                    pass
+                refreshed = await get_downloaded_track(entry["video_id"])
+                if not refreshed or not refreshed.get("file_path"):
                     raise
                 entry.update(refreshed)
-                stream_source = entry["stream_url"]
-                headers = entry.get("http_headers") or {}
+                stream_source = entry["file_path"]
                 title = entry.get("title") or title
-                await start_audio(stream_source, headers)
+                await start_audio(stream_source, {})
             else:
                 raise
+
+        await _delete_old_player_message(chat_id)
 
         # Prepare thumbnail only for the Telegram "Now Playing" message.
         # It has no effect on the voice-chat stream and does not enable video.
@@ -985,19 +1296,19 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
                 msg = await bot.send_photo(
                     chat_id,
                     photo=thumb_path,
-                    caption=f"🎧 Now Playing: {title}",
+                    caption=_player_caption(title, entry, user),
                     reply_markup=player_controls_markup(chat_id),
                 )
             except Exception:
                 msg = await bot.send_message(
                     chat_id,
-                    f"🎧 Now Playing: {title}",
+                    _player_caption(title, entry, user),
                     reply_markup=player_controls_markup(chat_id),
                 )
         else:
             msg = await bot.send_message(
                 chat_id,
-                f"🎧 Now Playing: {title}",
+                _player_caption(title, entry, user),
                 reply_markup=player_controls_markup(chat_id),
             )
 
@@ -1041,7 +1352,7 @@ async def play_entry(chat_id: int, entry: dict, reply_message: Optional[Message]
 
 async def track_watcher(chat_id: int, duration: int, msg_id: int):
     try:
-        await asyncio.sleep(max(1, duration) + 2)
+        await asyncio.sleep(max(1, duration) + 0.5)
         q = radio_queue.get(chat_id, [])
         if q:
             next_entry = q.pop(0)
@@ -1097,14 +1408,15 @@ async def cmd_play(_, message: Message):
             query = message.reply_to_message.text
         if not query:
             return await message.reply_text("Usage: /play <YouTube url or search terms> OR reply to an audio/voice file and use /play")
-        info_msg = await message.reply_text("🔎 Searching and preparing stream...")
-        info = extract_audio_url(query)
-        if info is None or not info.get("stream_url"):
-            await info_msg.edit_text("❌ Could not extract audio stream. Ensure yt-dlp is installed and cookies.txt set if needed.")
+        info_msg = await message.reply_text("🔎 Searching and downloading audio...")
+        info = await resolve_track(query)
+        if info is None or not info.get("id"):
+            await info_msg.edit_text("❌ Could not find that YouTube track.")
             return
         entry = {
             "title": info.get("title"),
-            "stream_url": info.get("stream_url"),
+            "video_id": info.get("id"),
+            "file_path": None,
             "webpage": info.get("webpage_url"),
             "thumbnail": info.get("thumbnail"),
             "duration": info.get("duration"),
